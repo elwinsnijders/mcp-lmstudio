@@ -1,144 +1,176 @@
-# LMStudio-MCP
+# LMStudio-MCP (Go Implementation)
 
-A Model Control Protocol (MCP) server that allows Claude to communicate with locally running LLM models via LM Studio.
-
-<img width="1881" alt="Screenshot 2025-03-22 at 16 50 53" src="https://github.com/user-attachments/assets/c203513b-28db-4be5-8c61-ebb8a24404ce" />
+A Model Control Protocol (MCP) server written in Go that allows AI assistants to communicate with locally running LLM models via LM Studio.
 
 ## Overview
 
-LMStudio-MCP creates a bridge between Claude (with MCP capabilities) and your locally running LM Studio instance. This allows Claude to:
+This is a Go port of the original Python-based LMStudio-MCP bridge. It provides the same functionality with improved performance and easier deployment as a single binary.
+
+LMStudio-MCP creates a bridge between AI assistants (with MCP capabilities) and your locally running LM Studio instance. This allows AI tools to:
 
 - Check the health of your LM Studio API
 - List available models
 - Get the currently loaded model
 - Generate completions using your local models
 
-This enables you to leverage your own locally running models through Claude's interface, combining Claude's capabilities with your private models.
+This enables you to leverage your own locally running models through AI assistants, combining their capabilities with your private models.
 
 ## Prerequisites
 
-- Python 3.7+
+- Go 1.24.0 or higher
 - [LM Studio](https://lmstudio.ai/) installed and running locally with a model loaded
-- Claude with MCP access
-- Required Python packages (see Installation)
+- MCP-compatible client (e.g., Claude Desktop, or any client supporting MCP)
 
 ## 🚀 Quick Installation
 
-### One-Line Install (Recommended)
+### Build from Source
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/infinitimeless/LMStudio-MCP/main/install.sh | bash
+cd mcp-lmstudio
+make install  # Download dependencies
+make build    # Build the binary
 ```
 
-### Manual Installation Methods
+The binary `mcp-lmstudio` will be created in the current directory.
 
-#### 1. Local Python Installation
+### Run Directly
+
 ```bash
-git clone https://github.com/infinitimeless/LMStudio-MCP.git
-cd LMStudio-MCP
-pip install requests "mcp[cli]" openai
+make run
 ```
-
-#### 2. Docker Installation
-```bash
-# Using pre-built image
-docker run -it --network host ghcr.io/infinitimeless/lmstudio-mcp:latest
-
-# Or build locally
-git clone https://github.com/infinitimeless/LMStudio-MCP.git
-cd LMStudio-MCP
-docker build -t lmstudio-mcp .
-docker run -it --network host lmstudio-mcp
-```
-
-#### 3. Docker Compose
-```bash
-git clone https://github.com/infinitimeless/LMStudio-MCP.git
-cd LMStudio-MCP
-docker-compose up -d
-```
-
-For detailed deployment instructions, see [DOCKER.md](DOCKER.md).
 
 ## MCP Configuration
 
-### Quick Setup
+### Using the Go Binary
 
-**Using GitHub directly (simplest)**:
+Add this to your MCP client's configuration file.
+
+**Example for Claude Desktop** (typically at `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
 ```json
 {
   "lmstudio-mcp": {
-    "command": "uvx",
-    "args": [
-      "https://github.com/infinitimeless/LMStudio-MCP"
-    ]
+    "command": "/path/to/mcp-lmstudio/mcp-lmstudio"
   }
 }
 ```
 
-**Using local installation**:
+> **Note:** Configuration format may vary depending on your MCP client. Consult your client's documentation for specific instructions.
+
+### Using Go Run (Development)
+
 ```json
 {
   "lmstudio-mcp": {
     "command": "/bin/bash",
     "args": [
       "-c",
-      "cd /path/to/LMStudio-MCP && source venv/bin/activate && python lmstudio_bridge.py"
+      "cd /path/to/mcp-lmstudio && go run cmd/mcp-lmstudio/main.go"
     ]
   }
 }
 ```
-
-**Using Docker**:
-```json
-{
-  "lmstudio-mcp-docker": {
-    "command": "docker",
-    "args": [
-      "run",
-      "-i",
-      "--rm",
-      "--network=host",
-      "ghcr.io/infinitimeless/lmstudio-mcp:latest"
-    ]
-  }
-}
-```
-
-For complete MCP configuration instructions, see [MCP_CONFIGURATION.md](MCP_CONFIGURATION.md).
 
 ## Usage
 
 1. **Start LM Studio** and ensure it's running on port 1234 (the default)
 2. **Load a model** in LM Studio
-3. **Configure Claude MCP** with one of the configurations above
-4. **Connect to the MCP server** in Claude when prompted
+3. **Configure your MCP client** with one of the configurations above
+4. **Connect to the MCP server** when prompted
 
-## Available Functions
+## Available Tools
 
-The bridge provides the following functions:
+The bridge provides the following MCP tools:
 
-- `health_check()`: Verify if LM Studio API is accessible
-- `list_models()`: Get a list of all available models in LM Studio
-- `get_current_model()`: Identify which model is currently loaded
-- `chat_completion(prompt, system_prompt, temperature, max_tokens)`: Generate text from your local model
+### `health_check`
+Check if LM Studio API is accessible.
 
-## Deployment Options
+**Returns:** A message indicating whether the LM Studio API is running.
 
-This project supports multiple deployment methods:
+### `list_models`
+List all available models in LM Studio.
 
-| Method | Use Case | Pros | Cons |
-|--------|----------|------|------|
-| **Local Python** | Development, simple setup | Fast, direct control | Requires Python setup |
-| **Docker** | Isolated environments | Clean, portable | Requires Docker |
-| **Docker Compose** | Production deployments | Easy management | More complex setup |
-| **Kubernetes** | Enterprise/scale | Highly scalable | Complex configuration |
-| **GitHub Direct** | Zero setup | No local install needed | Requires internet |
+**Returns:** A formatted list of available models.
 
-## Known Limitations
+### `get_current_model`
+Get the currently loaded model in LM Studio.
 
-- Some models (e.g., phi-3.5-mini-instruct_uncensored) may have compatibility issues
-- The bridge currently uses only the OpenAI-compatible API endpoints of LM Studio
-- Model responses will be limited by the capabilities of your locally loaded model
+**Returns:** The name of the currently loaded model.
+
+### `chat_completion`
+Generate a completion from the current LM Studio model.
+
+**Parameters:**
+- `prompt` (required): The user's prompt to send to the model
+- `system_prompt` (optional): System instructions for the model
+- `temperature` (optional, default: 0.7): Controls randomness (0.0 to 1.0)
+- `max_tokens` (optional, default: 1024): Maximum number of tokens to generate
+
+**Returns:** The model's response to the prompt
+
+## Configuration
+
+### Environment Variables
+
+- `LMSTUDIO_API_TOKEN`: Optional API token for authentication (if LM Studio requires it)
+
+### API Base URL
+
+By default, the server connects to `http://localhost:1234/v1`. To change this, modify the `LMStudioAPIBase` constant in `cmd/mcp-lmstudio/main.go`.
+
+## Logging
+
+All operations are logged to `lmstudio_audit.log` in the current directory. This includes:
+- Tool executions
+- API requests and responses
+- Errors and debugging information
+
+## Development
+
+### Project Structure
+
+```
+mcp-lmstudio/
+├── cmd/
+│   └── mcp-lmstudio/
+│       └── main.go          # Main server implementation
+├── go.mod                   # Go module definition
+├── go.sum                   # Go dependencies checksums
+├── Makefile                 # Build automation
+└── README_GO.md            # This file
+```
+
+### Building
+
+```bash
+make build
+```
+
+### Running
+
+```bash
+make run
+```
+
+### Cleaning
+
+```bash
+make clean  # Removes binary and log files
+```
+
+## Comparison with Python Version
+
+### Advantages of Go Version
+
+- **Single Binary**: No Python interpreter or virtual environment needed
+- **Better Performance**: Faster startup and lower memory usage
+- **Easy Deployment**: Just copy the binary, no dependency management
+- **Cross-Platform**: Build for any platform Go supports
+- **Static Typing**: Catch errors at compile time
+
+### Compatibility
+
+The Go version is fully compatible with the Python version and provides the same MCP tools and functionality.
 
 ## Troubleshooting
 
@@ -150,6 +182,13 @@ If Claude reports 404 errors when trying to connect to LM Studio:
 - Verify your firewall isn't blocking the connection
 - Try using "127.0.0.1" instead of "localhost" in the API URL if issues persist
 
+### Build Issues
+
+If you encounter build errors:
+- Ensure you have Go 1.24.0 or higher: `go version`
+- Run `make install` to download dependencies
+- Check that you're in the correct directory
+
 ### Model Compatibility
 
 If certain models don't work correctly:
@@ -157,23 +196,9 @@ If certain models don't work correctly:
 - Try different parameter values (temperature, max_tokens) for problematic models
 - Consider switching to a more compatible model if problems persist
 
-For detailed troubleshooting help, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-
-## 🐳 Docker & Containerization
-
-This project includes comprehensive Docker support:
-
-- **Multi-architecture images** (AMD64, ARM64/Apple Silicon)
-- **Automated builds** via GitHub Actions
-- **Pre-built images** available on GitHub Container Registry
-- **Docker Compose** for easy deployment
-- **Kubernetes manifests** for production deployments
-
-See [DOCKER.md](DOCKER.md) for complete containerization documentation.
-
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! This Go implementation follows the same architecture as the original Python version.
 
 ## License
 
@@ -181,7 +206,7 @@ MIT
 
 ## Acknowledgements
 
-This project was originally developed as "Claude-LMStudio-Bridge_V2" and has been renamed and open-sourced as "LMStudio-MCP".
+This is a Go port of the original [LMStudio-MCP](https://github.com/infinitimeless/LMStudio-MCP) project by infinitimeless.
 
 ---
 
