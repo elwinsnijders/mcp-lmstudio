@@ -11,7 +11,7 @@ Before starting, verify you have:
 go version
 
 # Check LM Studio is running
-curl http://localhost:1234/v1/models
+curl http://127.0.0.1:1234/v1/models
 ```
 
 If LM Studio returns a response, you're ready!
@@ -115,7 +115,7 @@ chmod +x mcp-lmstudio
 
 ```bash
 # Verify LM Studio is running
-curl http://localhost:1234/v1/models
+curl http://127.0.0.1:1234/v1/models
 
 # Check logs
 tail -f lmstudio_audit.log

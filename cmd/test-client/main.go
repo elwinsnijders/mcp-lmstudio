@@ -6,10 +6,19 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"strings"
 )
 
 func main() {
+	fmt.Println("==================================================")
+	fmt.Println("MCP LM Studio Test Client")
+	fmt.Println("==================================================")
+	fmt.Println("NOTE: LM Studio must be running on http://127.0.0.1:1234")
+	fmt.Println("      with a model loaded for tests to pass.")
+	fmt.Println("==================================================\n")
+
 	// 1. Start the server
 	cmd := exec.Command("./mcp-lmstudio")
 	stdin, err := cmd.StdinPipe()
@@ -27,6 +36,7 @@ func main() {
 	defer cmd.Process.Kill()
 
 	reader := bufio.NewReader(stdout)
+	testsFailed := false
 
 	send := func(v any) {
 		b, _ := json.Marshal(v)
@@ -46,6 +56,57 @@ func main() {
 		var res map[string]any
 		json.Unmarshal(line, &res)
 		return res
+	}
+
+	checkError := func(resp map[string]any, testName string) bool {
+		if errObj, hasError := resp["error"]; hasError {
+			fmt.Printf("\n❌ FAILED! %s returned an error:\n", testName)
+			errorJSON, _ := json.MarshalIndent(errObj, "", "  ")
+			fmt.Println(string(errorJSON))
+			testsFailed = true
+			return true
+		}
+		return false
+	}
+
+	checkResult := func(resp map[string]any, testName string) bool {
+		result, hasResult := resp["result"].(map[string]any)
+		if !hasResult {
+			fmt.Printf("\n❌ FAILED! %s has no result field\n", testName)
+			testsFailed = true
+			return false
+		}
+
+		content, hasContent := result["content"].([]any)
+		if !hasContent || len(content) == 0 {
+			fmt.Printf("\n❌ FAILED! %s has no content\n", testName)
+			testsFailed = true
+			return false
+		}
+
+		textContent, ok := content[0].(map[string]any)
+		if !ok {
+			fmt.Printf("\n❌ FAILED! %s content is not properly formatted\n", testName)
+			testsFailed = true
+			return false
+		}
+
+		text, ok := textContent["text"].(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			fmt.Printf("\n❌ FAILED! %s has empty text content\n", testName)
+			testsFailed = true
+			return false
+		}
+
+		// Check for error messages in the response text
+		lowerText := strings.ToLower(text)
+		if strings.Contains(lowerText, "error") || strings.Contains(lowerText, "failed") || strings.Contains(lowerText, "connection refused") {
+			fmt.Printf("\n❌ FAILED! %s returned an error:\n%s\n", testName, text)
+			testsFailed = true
+			return false
+		}
+
+		return true
 	}
 
 	// 2. Step 1: Initialize
@@ -90,9 +151,14 @@ func main() {
 	for {
 		resp := receive()
 		if resp["id"] == float64(2) {
-			fmt.Println("\nSUCCESS! health_check output received.")
-			result, _ := json.MarshalIndent(resp["result"], "", "  ")
-			fmt.Println(string(result))
+			if checkError(resp, "health_check") {
+				break
+			}
+			if checkResult(resp, "health_check") {
+				fmt.Println("\n✅ SUCCESS! health_check passed.")
+				result, _ := json.MarshalIndent(resp["result"], "", "  ")
+				fmt.Println(string(result))
+			}
 			break
 		}
 	}
@@ -112,9 +178,14 @@ func main() {
 	for {
 		resp := receive()
 		if resp["id"] == float64(3) {
-			fmt.Println("\nSUCCESS! list_models output received.")
-			result, _ := json.MarshalIndent(resp["result"], "", "  ")
-			fmt.Println(string(result))
+			if checkError(resp, "list_models") {
+				break
+			}
+			if checkResult(resp, "list_models") {
+				fmt.Println("\n✅ SUCCESS! list_models passed.")
+				result, _ := json.MarshalIndent(resp["result"], "", "  ")
+				fmt.Println(string(result))
+			}
 			break
 		}
 	}
@@ -134,9 +205,14 @@ func main() {
 	for {
 		resp := receive()
 		if resp["id"] == float64(4) {
-			fmt.Println("\nSUCCESS! get_current_model output received.")
-			result, _ := json.MarshalIndent(resp["result"], "", "  ")
-			fmt.Println(string(result))
+			if checkError(resp, "get_current_model") {
+				break
+			}
+			if checkResult(resp, "get_current_model") {
+				fmt.Println("\n✅ SUCCESS! get_current_model passed.")
+				result, _ := json.MarshalIndent(resp["result"], "", "  ")
+				fmt.Println(string(result))
+			}
 			break
 		}
 	}
@@ -160,12 +236,25 @@ func main() {
 	for {
 		resp := receive()
 		if resp["id"] == float64(5) {
-			fmt.Println("\nSUCCESS! chat_completion output received.")
-			result, _ := json.MarshalIndent(resp["result"], "", "  ")
-			fmt.Println(string(result))
+			if checkError(resp, "chat_completion") {
+				break
+			}
+			if checkResult(resp, "chat_completion") {
+				fmt.Println("\n✅ SUCCESS! chat_completion passed.")
+				result, _ := json.MarshalIndent(resp["result"], "", "  ")
+				fmt.Println(string(result))
+			}
 			break
 		}
 	}
 
-	fmt.Println("\n=== ALL TESTS COMPLETED SUCCESSFULLY ===")
+	fmt.Println("\n" + strings.Repeat("=", 50))
+	if testsFailed {
+		fmt.Println("❌ SOME TESTS FAILED")
+		fmt.Println(strings.Repeat("=", 50))
+		os.Exit(1)
+	} else {
+		fmt.Println("✅ ALL TESTS PASSED SUCCESSFULLY")
+		fmt.Println(strings.Repeat("=", 50))
+	}
 }

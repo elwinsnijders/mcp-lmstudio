@@ -116,7 +116,7 @@ Generate a completion from the current LM Studio model.
 
 ### API Base URL
 
-By default, the server connects to `http://localhost:1234/v1`. To change this, modify the `LMStudioAPIBase` constant in `cmd/mcp-lmstudio/main.go`.
+By default, the server connects to `http://127.0.0.1:1234/v1`. To change this, modify the `LMStudioAPIBase` constant in `cmd/mcp-lmstudio/main.go`.
 
 ## Logging
 
@@ -180,7 +180,7 @@ If Claude reports 404 errors when trying to connect to LM Studio:
 - Ensure LM Studio is running and has a model loaded
 - Check that LM Studio's server is running on port 1234
 - Verify your firewall isn't blocking the connection
-- Try using "127.0.0.1" instead of "localhost" in the API URL if issues persist
+- The server uses 127.0.0.1 to avoid IPv6 connection issues
 
 ### Build Issues
 
