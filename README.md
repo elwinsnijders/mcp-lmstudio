@@ -1,213 +1,242 @@
-# LMStudio-MCP (Go Implementation)
+# MCP LM Studio Orchestrator
 
-A Model Control Protocol (MCP) server written in Go that allows AI assistants to communicate with locally running LLM models via LM Studio.
+An MCP server that lets AI orchestrators (Claude Opus in Cursor) delegate execution tasks to worker AIs running on LM Studio. Manages sessions, tracks token budgets, maintains stateful conversations, and persists progress between worker shifts.
 
-## Overview
+## Architecture
 
-This is a Go port of the original Python-based LMStudio-MCP bridge. It provides the same functionality with improved performance and easier deployment as a single binary.
+**Claude Opus** is the architect -- it decides what to build. **Worker AI** (LM Studio) is the builder -- it does the actual work. This MCP server is the foreman -- it manages sessions, tracks budgets, and handles handoffs.
 
-LMStudio-MCP creates a bridge between AI assistants (with MCP capabilities) and your locally running LM Studio instance. This allows AI tools to:
-
-- Check the health of your LM Studio API
-- List available models
-- Get the currently loaded model
-- Generate completions using your local models
-
-This enables you to leverage your own locally running models through AI assistants, combining their capabilities with your private models.
-
-## Prerequisites
-
-- Go 1.24.0 or higher
-- [LM Studio](https://lmstudio.ai/) installed and running locally with a model loaded
-- MCP-compatible client (e.g., Claude Desktop, or any client supporting MCP)
-
-## 🚀 Quick Installation
-
-### Build from Source
-
-```bash
-cd mcp-lmstudio
-make install  # Download dependencies
-make build    # Build the binary
+```
+Claude Opus (Cursor)
+    |  MCP Protocol (stdio)
+    v
+MCP Server (this binary)
+    |  - Session Manager (tracks sessions, tokens, response chains)
+    |  - Profile System (agent roles, system prompts, integrations)
+    |  - Progress Manager (markdown progress files)
+    |  HTTP REST
+    v
+LM Studio (local AI)
+    |  - Stateful Chats (response_id continuity)
+    |  - MCP Integrations (filesystem, web, etc.)
 ```
 
-The binary `mcp-lmstudio` will be created in the current directory.
+## Quick Start
 
-### Run Directly
+1. **Install LM Studio** and load a model
+2. **Build the server:**
+   ```bash
+   make build
+   ```
+3. **Configure** `config.json` with your profiles and integrations
+4. **Add to Cursor's MCP config** (see Configuration below)
 
-```bash
-make run
+## MCP Tools
+
+### Discovery
+| Tool | Description |
+|------|-------------|
+| `health_check` | Check if LM Studio API is accessible |
+| `list_models` | List available models in LM Studio |
+| `list_profiles` | List agent profiles (coder, reviewer, etc.) |
+| `list_integrations` | List available integrations (filesystem, etc.) |
+
+### Task Lifecycle
+| Tool | Description |
+|------|-------------|
+| `start_task` | Start a new worker session. Pass `task` + `profile` key. |
+| `continue_task` | Continue a session. Worker remembers the conversation. |
+| `end_session` | End a session, optionally saving progress first. |
+
+### Progress
+| Tool | Description |
+|------|-------------|
+| `save_progress` | Ask worker to summarize, then save to markdown file. |
+| `load_progress` | Load a progress file to use as context for a new session. |
+
+### Session Management
+| Tool | Description |
+|------|-------------|
+| `get_session_status` | Get token usage and metadata for a session. |
+| `list_sessions` | List all sessions with status and token counts. |
+
+## Typical Workflow
+
 ```
+1. Claude calls start_task(task: "Refactor auth to JWT", profile: "coder")
+   -> Returns: session_id, worker response, token usage
 
-## MCP Configuration
+2. Claude calls continue_task(session_id, "Use RS256 algorithm")
+   -> Returns: worker response, updated token count
 
-### Using the Go Binary
+3. When approaching token limit, Claude calls save_progress(session_id)
+   -> Returns: progress file path
 
-Add this to your MCP client's configuration file.
-
-**Example for Claude Desktop** (typically at `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-
-```json
-{
-  "lmstudio-mcp": {
-    "command": "/path/to/mcp-lmstudio/mcp-lmstudio"
-  }
-}
+4. Claude calls start_task(task: "Continue refactoring", profile: "coder", context: <progress file>)
+   -> New session picks up where previous left off
 ```
-
-> **Note:** Configuration format may vary depending on your MCP client. Consult your client's documentation for specific instructions.
-
-### Using Go Run (Development)
-
-```json
-{
-  "lmstudio-mcp": {
-    "command": "/bin/bash",
-    "args": [
-      "-c",
-      "cd /path/to/mcp-lmstudio && go run cmd/mcp-lmstudio/main.go"
-    ]
-  }
-}
-```
-
-## Usage
-
-1. **Start LM Studio** and ensure it's running on port 1234 (the default)
-2. **Load a model** in LM Studio
-3. **Configure your MCP client** with one of the configurations above
-4. **Connect to the MCP server** when prompted
-
-## Available Tools
-
-The bridge provides the following MCP tools:
-
-### `health_check`
-Check if LM Studio API is accessible.
-
-**Returns:** A message indicating whether the LM Studio API is running.
-
-### `list_models`
-List all available models in LM Studio.
-
-**Returns:** A formatted list of available models.
-
-### `get_current_model`
-Get the currently loaded model in LM Studio.
-
-**Returns:** The name of the currently loaded model.
-
-### `chat_completion`
-Generate a completion from the current LM Studio model.
-
-**Parameters:**
-- `prompt` (required): The user's prompt to send to the model
-- `system_prompt` (optional): System instructions for the model
-- `temperature` (optional, default: 0.7): Controls randomness (0.0 to 1.0)
-- `max_tokens` (optional, default: 1024): Maximum number of tokens to generate
-
-**Returns:** The model's response to the prompt
 
 ## Configuration
 
+### config.json
+
+The `config.json` file defines agent profiles and integrations. Claude only needs to pass short keys like `profile: "coder"` -- all system prompts and settings resolve server-side.
+
+```json
+{
+  "shared_system_prompt": "Follow clean code principles. Be concise in explanations. When modifying files, always verify the current state before making changes.",
+
+  "profiles": {
+    "coder": {
+      "label": "Senior Developer",
+      "description": "Implements features, writes clean production code, refactors existing code",
+      "system_prompt": "You are a senior software developer. Implement the given task with clean, production-quality code. Use the tools available to read existing code and write your changes directly. Focus on code, not narration.",
+      "model": "qwen3.5-27b",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "repeat_penalty": 1.0,
+      "integrations": ["sj-sandbox"]
+    },
+    "reviewer": {
+      "label": "Code Reviewer",
+      "description": "Reviews code for bugs, security issues, performance, and best practices",
+      "system_prompt": "You are an expert code reviewer. Analyze the given code or changeset for bugs, security vulnerabilities, performance issues, and deviations from best practices. Structure your review as: Critical Issues, Warnings, Suggestions.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "tester": {
+      "label": "Test Engineer",
+      "description": "Writes unit tests, integration tests, identifies edge cases and missing coverage",
+      "system_prompt": "You are a QA engineer. Write thorough tests for the given code. Cover happy paths, edge cases, error conditions, and boundary values. Use the tools available to read source code and write test files directly.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "researcher": {
+      "label": "Codebase Researcher",
+      "description": "Explores codebases, documents architecture, maps dependencies, finds patterns",
+      "system_prompt": "You are a codebase analyst. Explore the given codebase and answer questions about its structure, patterns, and architecture. Be thorough in exploration but concise in reports.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "debugger": {
+      "label": "Debugger",
+      "description": "Traces errors to root causes, analyzes stack traces, proposes and applies fixes",
+      "system_prompt": "You are a debugging specialist. Trace the reported error to its root cause. Read source code, examine related files, and understand the call chain. Report: Root Cause, Evidence, Fix, Prevention.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    }
+  },
+
+  "integrations": {
+    "sj-sandbox": {
+      "label": "JS code sandbox",
+      "description": "Try and test js code",
+      "type": "plugin",
+      "id": "mcp/js-sandbox"
+    },
+    "filesystem": {
+      "label": "Filesystem Access",
+      "description": "Read/write project files and list directories",
+      "type": "plugin",
+      "id": "mcp/filesystem"
+    },
+    "playwright": {
+      "label": "Browser Automation",
+      "description": "Navigate web pages, interact with elements, take screenshots",
+      "type": "plugin",
+      "id": "mcp/playwright"
+    }
+  }
+}
+```
+
+**System prompt assembly** (5 layers, concatenated in order):
+1. Efficiency preamble (hardcoded, always on)
+2. Shared system prompt (from config, applies to all profiles)
+3. Profile prompt (role-specific, from config)
+4. Override prompt (optional, from Claude per-call)
+5. Context (optional, e.g. progress from a previous session)
+
 ### Environment Variables
 
-- `LMSTUDIO_API_TOKEN`: Optional API token for authentication (if LM Studio requires it)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LMSTUDIO_API_BASE` | `http://127.0.0.1:1234` | LM Studio URL |
+| `LMSTUDIO_API_TOKEN` | (none) | Bearer token for auth |
+| `LMSTUDIO_MODEL` | `default` | Default model name |
+| `LMSTUDIO_CONTEXT_LENGTH` | `8192` | Default context window |
+| `LMSTUDIO_REQUEST_TIMEOUT` | `10` | HTTP timeout in minutes |
+| `MAX_SESSION_TOKENS` | `175000` | Token budget per session |
+| `TOKEN_WARNING_THRESHOLD` | `0.80` | Warning at this % |
+| `TOKEN_CRITICAL_THRESHOLD` | `0.95` | Critical warning at this % |
+| `CONFIG_FILE` | `config.json` | Path to config file |
+| `SESSIONS_DIR` | `sessions/` | Session state directory |
+| `PROGRESS_DIR` | `progress/` | Progress files directory |
+| `LOG_FILE` | `/tmp/lmstudio_audit.log` | Audit log path |
 
-### API Base URL
+### Cursor MCP Configuration
 
-By default, the server connects to `http://127.0.0.1:1234/v1`. To change this, modify the `LMStudioAPIBase` constant in `cmd/mcp-lmstudio/main.go`.
+Add to your Cursor MCP settings:
 
-## Logging
+```json
+{
+  "mcpServers": {
+    "lmstudio-bridge": {
+      "command": "/path/to/mcp-lmstudio",
+      "env": {
+        "LMSTUDIO_MODEL": "your-model-key",
+        "CONFIG_FILE": "/path/to/config.json"
+      }
+    }
+  }
+}
+```
 
-All operations are logged to `lmstudio_audit.log` in the current directory. This includes:
-- Tool executions
-- API requests and responses
-- Errors and debugging information
+## Token Management
+
+Every response includes token usage. When approaching the configured limit:
+
+- **80%** -- `WARNING: Token usage at 80%. Consider saving progress.`
+- **95%** -- `CRITICAL: Token usage at 95%. Save progress immediately.`
+
+The `save_progress` tool asks the worker for a structured summary, writes it to a markdown file, and returns the path. Use `load_progress` to feed it as context into a new session via `start_task`.
+
+## Built-in Agent Profiles
+
+| Profile | Role | Model | Temp | Integrations |
+|---------|------|-------|------|--------------|
+| `coder` | Senior Developer | `qwen3.5-27b` | 0.6 | sj-sandbox |
+| `reviewer` | Code Reviewer | `qwen3.5-27b@q4_k_s` | 0.6 | sj-sandbox |
+| `tester` | Test Engineer | `qwen3.5-27b@q4_k_s` | 0.6 | sj-sandbox |
+| `researcher` | Codebase Researcher | `qwen3.5-27b@q4_k_s` | 0.6 | sj-sandbox |
+| `debugger` | Debugger | `qwen3.5-27b@q4_k_s` | 0.6 | sj-sandbox |
+
+All profiles are customizable in `config.json`. Each profile supports per-model settings including `context_length`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `max_output_tokens`, and `reasoning`.
 
 ## Development
 
-### Project Structure
-
-```
-mcp-lmstudio/
-├── cmd/
-│   └── mcp-lmstudio/
-│       └── main.go          # Main server implementation
-├── go.mod                   # Go module definition
-├── go.sum                   # Go dependencies checksums
-├── Makefile                 # Build automation
-└── README_GO.md            # This file
-```
-
-### Building
-
 ```bash
-make build
+make install   # Download dependencies
+make build     # Build binary
+make test      # Run test client (requires LM Studio running)
+make clean     # Remove binary and data directories
 ```
-
-### Running
-
-```bash
-make run
-```
-
-### Cleaning
-
-```bash
-make clean  # Removes binary and log files
-```
-
-## Comparison with Python Version
-
-### Advantages of Go Version
-
-- **Single Binary**: No Python interpreter or virtual environment needed
-- **Better Performance**: Faster startup and lower memory usage
-- **Easy Deployment**: Just copy the binary, no dependency management
-- **Cross-Platform**: Build for any platform Go supports
-- **Static Typing**: Catch errors at compile time
-
-### Compatibility
-
-The Go version is fully compatible with the Python version and provides the same MCP tools and functionality.
-
-## Troubleshooting
-
-### API Connection Issues
-
-If Claude reports 404 errors when trying to connect to LM Studio:
-- Ensure LM Studio is running and has a model loaded
-- Check that LM Studio's server is running on port 1234
-- Verify your firewall isn't blocking the connection
-- The server uses 127.0.0.1 to avoid IPv6 connection issues
-
-### Build Issues
-
-If you encounter build errors:
-- Ensure you have Go 1.24.0 or higher: `go version`
-- Run `make install` to download dependencies
-- Check that you're in the correct directory
-
-### Model Compatibility
-
-If certain models don't work correctly:
-- Some models might not fully support the OpenAI chat completions API format
-- Try different parameter values (temperature, max_tokens) for problematic models
-- Consider switching to a more compatible model if problems persist
-
-## Contributing
-
-Contributions are welcome! This Go implementation follows the same architecture as the original Python version.
-
-## License
-
-MIT
-
-## Acknowledgements
-
-This is a Go port of the original [LMStudio-MCP](https://github.com/infinitimeless/LMStudio-MCP) project by infinitimeless.
-
----
-
-**🌟 If this project helps you, please consider giving it a star!**

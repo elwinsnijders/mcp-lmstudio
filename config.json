@@ -1,0 +1,96 @@
+{
+  "shared_system_prompt": "Follow clean code principles. Be concise in explanations. When modifying files, always verify the current state before making changes.",
+
+  "profiles": {
+    "coder": {
+      "label": "Senior Developer",
+      "description": "Implements features, writes clean production code, refactors existing code",
+      "system_prompt": "You are a senior software developer. Implement the given task with clean, production-quality code. Use the tools available to read existing code and write your changes directly. Focus on code, not narration.",
+      "model": "qwen3.5-27b",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "repeat_penalty": 1.0,
+      "integrations": ["sj-sandbox"]
+    },
+    "reviewer": {
+      "label": "Code Reviewer",
+      "description": "Reviews code for bugs, security issues, performance, and best practices",
+      "system_prompt": "You are an expert code reviewer. Analyze the given code or changeset for bugs, security vulnerabilities, performance issues, and deviations from best practices. Structure your review as: Critical Issues, Warnings, Suggestions.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "tester": {
+      "label": "Test Engineer",
+      "description": "Writes unit tests, integration tests, identifies edge cases and missing coverage",
+      "system_prompt": "You are a QA engineer. Write thorough tests for the given code. Cover happy paths, edge cases, error conditions, and boundary values. Use the tools available to read source code and write test files directly.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "repeat_penalty": 1.0,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "researcher": {
+      "label": "Codebase Researcher",
+      "description": "Explores codebases, documents architecture, maps dependencies, finds patterns",
+      "system_prompt": "You are a codebase analyst. Explore the given codebase and answer questions about its structure, patterns, and architecture. Be thorough in exploration but concise in reports.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "repeat_penalty": 1.0,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    },
+    "debugger": {
+      "label": "Debugger",
+      "description": "Traces errors to root causes, analyzes stack traces, proposes and applies fixes",
+      "system_prompt": "You are a debugging specialist. Trace the reported error to its root cause. Read source code, examine related files, and understand the call chain. Report: Root Cause, Evidence, Fix, Prevention.",
+      "model": "qwen3.5-27b@q4_k_s",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0,
+      "repeat_penalty": 1.0,
+      "context_length": 175000,
+      "max_output_tokens": 175000,
+      "reasoning": "off",
+      "integrations": ["sj-sandbox"]
+    }
+  },
+
+  "integrations": {
+    "sj-sandbox": {
+      "label": "JS code sandbox",
+      "description": "Try and test js code",
+      "type": "plugin",
+      "id": "mcp/js-sandbox"
+    },
+    "filesystem": {
+      "label": "Filesystem Access",
+      "description": "Read/write project files and list directories",
+      "type": "plugin",
+      "id": "mcp/filesystem"
+    },
+    "playwright": {
+      "label": "Browser Automation",
+      "description": "Navigate web pages, interact with elements, take screenshots",
+      "type": "plugin",
+      "id": "mcp/playwright"
+    }
+  }
+}
