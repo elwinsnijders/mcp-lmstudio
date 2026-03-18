@@ -19,6 +19,13 @@ vendor/
 # Go workspace file
 go.work
 
+# Config (use config.json.example as template)
+config.json
+
+# Session and progress data
+sessions/
+progress/
+
 # Logs
 lmstudio_audit.log
 agent_audit.log

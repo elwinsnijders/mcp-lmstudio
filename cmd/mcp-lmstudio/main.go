@@ -484,41 +484,23 @@ func errResult(text string) *mcp.CallToolResult {
 }
 
 func formatOutput(items []lmstudio.Output) string {
-	var parts []string
+	var last string
 	for _, item := range items {
-		switch item.Type {
-		case "message":
-			if item.Content != "" {
-				parts = append(parts, item.Content)
-			}
-		case "tool_call":
-			s := fmt.Sprintf("[Tool: %s]", item.Tool)
-			if len(item.Arguments) > 0 {
-				s += fmt.Sprintf(" Args: %s", string(item.Arguments))
-			}
-			if item.Output != "" {
-				s += "\nResult: " + item.Output
-			}
-			parts = append(parts, s)
-		case "reasoning":
-			if item.Content != "" {
-				parts = append(parts, "[Reasoning] "+item.Content)
-			}
-		case "invalid_tool_call":
-			parts = append(parts, "[Invalid Tool Call] "+item.Reason)
+		if item.Type == "message" && item.Content != "" {
+			last = item.Content
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	return last
 }
 
 func extractMessages(items []lmstudio.Output) string {
-	var parts []string
+	var last string
 	for _, item := range items {
 		if item.Type == "message" && item.Content != "" {
-			parts = append(parts, item.Content)
+			last = item.Content
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	return last
 }
 
 func truncate(s string, maxLen int) string {
