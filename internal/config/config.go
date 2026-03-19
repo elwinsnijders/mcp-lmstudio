@@ -21,11 +21,12 @@ type Config struct {
 	TokenWarningThreshold  float64
 	TokenCriticalThreshold float64
 
-	ConfigFile  string
-	SessionsDir string
-	ProgressDir string
-	ChatlogDir  string
-	LogFile     string
+	ConfigFile   string
+	SessionsDir  string
+	ProgressDir  string
+	ChatlogDir   string
+	ArtifactsDir string
+	LogFile      string
 
 	App AppConfig
 }
@@ -78,6 +79,7 @@ func Load() (*Config, error) {
 		SessionsDir:            getEnv("SESSIONS_DIR", "sessions"),
 		ProgressDir:            getEnv("PROGRESS_DIR", "progress"),
 		ChatlogDir:             getEnv("CHATLOG_DIR", "chatlogs"),
+		ArtifactsDir:           getEnv("ARTIFACTS_DIR", "artifacts"),
 		LogFile:                getEnv("LOG_FILE", defaultLogFile()),
 	}
 
@@ -92,6 +94,7 @@ func Load() (*Config, error) {
 	os.MkdirAll(cfg.SessionsDir, 0755)
 	os.MkdirAll(cfg.ProgressDir, 0755)
 	os.MkdirAll(cfg.ChatlogDir, 0755)
+	os.MkdirAll(cfg.ArtifactsDir, 0755)
 
 	return cfg, nil
 }

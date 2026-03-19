@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/infinitimeless/lmstudio-mcp/internal/artifacts"
 	"github.com/infinitimeless/lmstudio-mcp/internal/chatlog"
 	"github.com/infinitimeless/lmstudio-mcp/internal/config"
 	"github.com/infinitimeless/lmstudio-mcp/internal/lmstudio"
@@ -59,6 +60,17 @@ type EndSessionArgs struct {
 	Save      bool   `json:"save,omitempty" jsonschema:"Save progress before ending the session"`
 }
 
+type ListArtifactsArgs struct {
+	SessionID  string `json:"session_id" jsonschema:"The session ID"`
+	ToolFilter string `json:"tool_filter,omitempty" jsonschema:"Filter by tool name (e.g. read_file)"`
+}
+
+type GetArtifactArgs struct {
+	SessionID string `json:"session_id" jsonschema:"The session ID"`
+	Sequence  int    `json:"sequence,omitempty" jsonschema:"Artifact sequence number from list_session_artifacts"`
+	FilePath  string `json:"file_path,omitempty" jsonschema:"File path to look up (for file-read artifacts)"`
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -85,6 +97,11 @@ func main() {
 	chatWriter, err := chatlog.NewWriter(cfg.ChatlogDir)
 	if err != nil {
 		logger.Printf("Warning: chatlog disabled: %v", err)
+	}
+
+	artStore, err := artifacts.NewStore(cfg.ArtifactsDir)
+	if err != nil {
+		logger.Printf("Warning: artifact store disabled: %v", err)
 	}
 
 	resolveSessionIntegrations := func(sess *session.Session) []interface{} {
@@ -254,6 +271,8 @@ func main() {
 		}
 
 		fullText := formatOutput(chatResp.Output)
+		storeArtifacts(artStore, logger, sess.ID, chatResp.Output)
+
 		if chatWriter != nil {
 			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
 				InputTokens:  chatResp.Stats.InputTokens,
@@ -336,6 +355,8 @@ func main() {
 		}
 
 		fullText := formatOutput(chatResp.Output)
+		storeArtifacts(artStore, logger, sess.ID, chatResp.Output)
+
 		if chatWriter != nil {
 			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
 				InputTokens:  chatResp.Stats.InputTokens,
@@ -544,6 +565,72 @@ func main() {
 		return textResult(msg), nil, nil
 	})
 
+	// ── list_session_artifacts ──────────────────────────────────────────
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "list_session_artifacts",
+		Description: "List tool results (file reads, searches, etc.) captured during a session. Returns metadata only — use get_session_artifact to retrieve contents.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args ListArtifactsArgs) (*mcp.CallToolResult, any, error) {
+		if artStore == nil {
+			return errResult("Artifact store not available."), nil, nil
+		}
+
+		arts, err := artStore.List(args.SessionID)
+		if err != nil {
+			return errResult(fmt.Sprintf("Error: %v", err)), nil, nil
+		}
+		if len(arts) == 0 {
+			return textResult("No artifacts captured for this session."), nil, nil
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "Artifacts for %s:\n", args.SessionID)
+		for _, a := range arts {
+			if args.ToolFilter != "" && a.Tool != args.ToolFilter {
+				continue
+			}
+			fmt.Fprintf(&b, "  [%d] %s", a.Sequence, a.Tool)
+			if a.FilePath != "" {
+				fmt.Fprintf(&b, "  path=%s", a.FilePath)
+			}
+			fmt.Fprintf(&b, "  size=%d bytes", a.ContentSize)
+			fmt.Fprintf(&b, "  %s\n", a.Timestamp.Format("15:04:05"))
+		}
+		return textResult(b.String()), nil, nil
+	})
+
+	// ── get_session_artifact ────────────────────────────────────────────
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_session_artifact",
+		Description: "Retrieve the full content of a tool result captured during a session. Look up by sequence number or file path. Use list_session_artifacts first to see what's available.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args GetArtifactArgs) (*mcp.CallToolResult, any, error) {
+		if artStore == nil {
+			return errResult("Artifact store not available."), nil, nil
+		}
+
+		var art *artifacts.Artifact
+		var content string
+
+		if args.FilePath != "" {
+			art, content, err = artStore.GetByPath(args.SessionID, args.FilePath)
+		} else {
+			art, content, err = artStore.Get(args.SessionID, args.Sequence)
+		}
+		if err != nil {
+			return errResult(fmt.Sprintf("Error: %v", err)), nil, nil
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "Artifact [%d] %s", art.Sequence, art.Tool)
+		if art.FilePath != "" {
+			fmt.Fprintf(&b, " — %s", art.FilePath)
+		}
+		fmt.Fprintf(&b, " (%d bytes)\n\n", art.ContentSize)
+		b.WriteString(content)
+		return textResult(b.String()), nil, nil
+	})
+
 	// ── Start server ────────────────────────────────────────────────────
 
 	transport := &mcp.LoggingTransport{
@@ -599,4 +686,17 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func storeArtifacts(store *artifacts.Store, logger *log.Logger, sessionID string, output []lmstudio.Output) {
+	if store == nil {
+		return
+	}
+	for _, item := range output {
+		if item.Type == "tool_call" && item.Output != "" {
+			if err := store.Store(sessionID, item.Tool, item.Arguments, item.Output, item.ProviderInfo); err != nil {
+				logger.Printf("Warning: failed to store artifact for %s/%s: %v", sessionID, item.Tool, err)
+			}
+		}
+	}
 }

@@ -10,7 +10,8 @@ import (
 
 const preambleTemplate = `You are an AI assistant working on a delegated task. Token budget: %d/%d tokens.
 Be concise. Focus on code and results, not narration. Document errors with messages and fixes.
-Track which files you read and modify. Use your tools to access files directly.`
+Track which files you read and modify. Use your tools to access files directly.
+When you read files, do not reproduce their full contents in your response. The orchestrator can retrieve file contents directly from captured tool results. Focus on analysis, actions, and relevant snippets.`
 
 type Manager struct {
 	cfg *config.Config
