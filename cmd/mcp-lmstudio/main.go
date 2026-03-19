@@ -84,7 +84,7 @@ func main() {
 	defer logFile.Close()
 	logger := log.New(logFile, "MCP: ", log.LstdFlags)
 
-	lm := lmstudio.NewClient(cfg.APIBase, cfg.APIToken, cfg.RequestTimeout)
+	lm := lmstudio.NewClient(cfg.APIBase, cfg.APIToken, cfg.RequestTimeout, logger)
 
 	store, err := session.NewStore(cfg.SessionsDir)
 	if err != nil {

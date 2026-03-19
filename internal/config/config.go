@@ -91,12 +91,49 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cfg.resolveDataDirs()
+
 	os.MkdirAll(cfg.SessionsDir, 0755)
 	os.MkdirAll(cfg.ProgressDir, 0755)
 	os.MkdirAll(cfg.ChatlogDir, 0755)
 	os.MkdirAll(cfg.ArtifactsDir, 0755)
 
 	return cfg, nil
+}
+
+// resolveDataDirs makes relative data directories resolve beside the config
+// file (or the executable) rather than the process's CWD, so the MCP server
+// and the UI always agree on where sessions/chatlogs/etc live.
+func (c *Config) resolveDataDirs() {
+	base := configBaseDir(c.ConfigFile)
+	c.SessionsDir = resolveDir(base, c.SessionsDir)
+	c.ProgressDir = resolveDir(base, c.ProgressDir)
+	c.ChatlogDir = resolveDir(base, c.ChatlogDir)
+	c.ArtifactsDir = resolveDir(base, c.ArtifactsDir)
+}
+
+func configBaseDir(cfgPath string) string {
+	if filepath.IsAbs(cfgPath) {
+		return filepath.Dir(cfgPath)
+	}
+	if execPath, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(execPath), cfgPath)
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Dir(candidate)
+		}
+	}
+	abs, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(abs)
+}
+
+func resolveDir(base, dir string) string {
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(base, dir)
 }
 
 func (c *Config) loadAppConfig() error {

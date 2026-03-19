@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -16,15 +17,20 @@ type Client struct {
 	baseURL    string
 	authToken  string
 	httpClient *http.Client
+	logger     *log.Logger
 }
 
-func NewClient(baseURL, authToken string, timeoutMinutes int) *Client {
+func NewClient(baseURL, authToken string, timeoutMinutes int, logger *log.Logger) *Client {
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
 	return &Client{
 		baseURL:   baseURL,
 		authToken: authToken,
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutMinutes) * time.Minute,
 		},
+		logger: logger,
 	}
 }
 
@@ -70,7 +76,7 @@ type StreamCallbacks struct {
 
 // ChatStream sends a streaming chat request via LM Studio's v1 SSE API.
 // Calls OnDelta for message text chunks and OnToolCall for tool events.
-// Returns the full ChatResponse from the chat.end event.
+// Falls back to regular JSON parsing when LM Studio doesn't return SSE.
 func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCallbacks) (*ChatResponse, error) {
 	req.Stream = true
 
@@ -96,12 +102,40 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCall
 		return nil, fmt.Errorf("LM Studio returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
+	ct := resp.Header.Get("Content-Type")
+	c.logger.Printf("ChatStream Content-Type: %s", ct)
+
+	if !strings.Contains(ct, "text/event-stream") {
+		c.logger.Printf("ChatStream: non-SSE response, falling back to JSON parse")
+		return c.parseJSONResponse(resp.Body)
+	}
+
+	return c.parseSSEStream(resp.Body, cb)
+}
+
+func (c *Client) parseJSONResponse(body io.Reader) (*ChatResponse, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	c.logger.Printf("ChatStream JSON body length: %d", len(data))
+
+	var chatResp ChatResponse
+	if err := json.Unmarshal(data, &chatResp); err != nil {
+		return nil, fmt.Errorf("parsing JSON response: %w", err)
+	}
+	return &chatResp, nil
+}
+
+func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatResponse, error) {
 	var accumulated strings.Builder
 	var finalResponse *ChatResponse
 	var pendingTool ToolCallEvent
+	eventCount := 0
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	const maxBuf = 1024 * 1024 // 1 MB for large reasoning responses
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, maxBuf), maxBuf)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -118,8 +152,10 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCall
 
 		var event StreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			c.logger.Printf("ChatStream: failed to parse SSE data: %v (len=%d)", err, len(data))
 			continue
 		}
+		eventCount++
 
 		switch event.Type {
 		case "message.delta":
@@ -163,7 +199,10 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCall
 		return nil, fmt.Errorf("reading stream: %w", err)
 	}
 
+	c.logger.Printf("ChatStream: parsed %d events, finalResponse=%v", eventCount, finalResponse != nil)
+
 	if finalResponse == nil {
+		c.logger.Printf("ChatStream: no chat.end received, using accumulated text (%d bytes)", accumulated.Len())
 		finalResponse = &ChatResponse{
 			Output: []Output{{Type: "message", Content: accumulated.String()}},
 		}
