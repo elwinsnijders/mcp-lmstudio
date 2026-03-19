@@ -81,6 +81,18 @@ func main() {
 	prog := progress.NewManager(cfg.ProgressDir)
 	profiles := profile.NewManager(cfg)
 
+	resolveSessionIntegrations := func(sess *session.Session) []interface{} {
+		if len(sess.IntegrationKeys) == 0 {
+			return nil
+		}
+		ints, err := profiles.ResolveIntegrations(sess.IntegrationKeys)
+		if err != nil {
+			logger.Printf("Warning: could not resolve integrations for session %s: %v", sess.ID, err)
+			return nil
+		}
+		return ints
+	}
+
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: ServerName, Version: ServerVersion},
 		&mcp.ServerOptions{
@@ -251,6 +263,9 @@ func main() {
 			Model: sess.Model,
 			Input: args.Message,
 		}
+		if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
+			chatReq.Integrations = ints
+		}
 		if sess.LatestResponseID != "" {
 			chatReq.PreviousResponseID = sess.LatestResponseID
 		}
@@ -293,6 +308,9 @@ func main() {
 		chatReq := &lmstudio.ChatRequest{
 			Model: sess.Model,
 			Input: progress.SaveProgressPrompt,
+		}
+		if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
+			chatReq.Integrations = ints
 		}
 		if sess.LatestResponseID != "" {
 			chatReq.PreviousResponseID = sess.LatestResponseID
@@ -412,6 +430,9 @@ func main() {
 			chatReq := &lmstudio.ChatRequest{
 				Model: sess.Model,
 				Input: progress.SaveProgressPrompt,
+			}
+			if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
+				chatReq.Integrations = ints
 			}
 			if sess.LatestResponseID != "" {
 				chatReq.PreviousResponseID = sess.LatestResponseID
