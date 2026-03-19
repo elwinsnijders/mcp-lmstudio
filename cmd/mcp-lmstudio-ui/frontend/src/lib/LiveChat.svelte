@@ -137,18 +137,18 @@
     for (const ev of events) {
       switch (ev.type) {
         case 'user_message':
-          if (pendingAI) {
-            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
-            pendingAI = ''
+          if (pendingAI.trim()) {
+            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
           }
+          pendingAI = ''
           pendingReasoning = ''
           msgs.push({ role: 'user', content: ev.content })
           break
         case 'reasoning_start':
-          if (pendingAI) {
-            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
-            pendingAI = ''
+          if (pendingAI.trim()) {
+            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
           }
+          pendingAI = ''
           pendingReasoning = ''
           break
         case 'reasoning_delta':
@@ -172,17 +172,17 @@
           pendingAI = ''
           break
         case 'tool_use':
-          if (pendingAI) {
-            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
-            pendingAI = ''
+          if (pendingAI.trim()) {
+            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
           }
+          pendingAI = ''
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
           break
         case 'tool_call_start':
-          if (pendingAI) {
-            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
-            pendingAI = ''
+          if (pendingAI.trim()) {
+            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
           }
+          pendingAI = ''
           msgs.push({ role: 'tool_start', tool: ev.tool })
           break
         case 'tool_call_result':
@@ -312,13 +312,14 @@
   }
 
   function flushStream() {
-    if (_rawStream || streamBuffer) {
-      stopTypewriter()
-      messages = [...messages, { role: 'assistant', content: _rawStream || streamBuffer, stats: null }]
-      _rawStream = ''
-      _streamPos = 0
-      streamBuffer = ''
+    const text = (_rawStream || streamBuffer || '').trim()
+    stopTypewriter()
+    if (text) {
+      messages = [...messages, { role: 'assistant', content: text, stats: null }]
     }
+    _rawStream = ''
+    _streamPos = 0
+    streamBuffer = ''
   }
 
   function flushBuffers() {
@@ -356,10 +357,16 @@
     return parts.join(' | ')
   }
 
-  function truncate(s, max) {
-    if (!s) return ''
-    return s.length > max ? s.slice(0, max) + '...' : s
+  const PREVIEW_LINES = 5
+
+  function previewLines(s) {
+    if (!s) return { preview: '', full: '', needsExpand: false }
+    const lines = s.split('\n')
+    if (lines.length <= PREVIEW_LINES) return { preview: s, full: s, needsExpand: false }
+    return { preview: lines.slice(0, PREVIEW_LINES).join('\n'), full: s, needsExpand: true }
   }
+
+  let expandedTools = {}
 
   function statusLabel(phase) {
     if (phase === 'prompt_processing') return 'Processing prompt'
@@ -490,29 +497,42 @@
             </div>
 
           {:else if msg.role === 'tool_result'}
+            {@const argsP = previewLines(msg.arguments)}
+            {@const outP = previewLines(msg.output)}
+            {@const key = `${i}`}
             <div class="flex justify-center">
-              <div class="max-w-[85%]">
-                <details class="group">
-                  <summary class="cursor-pointer text-[11px] font-mono flex items-center gap-1.5 py-1 select-none {msg.success ? 'text-emerald-600' : 'text-red-600'}">
-                    <span class="w-1.5 h-1.5 rounded-full {msg.success ? 'bg-emerald-400' : 'bg-red-400'}"></span>
-                    {msg.tool}: {msg.success ? 'success' : 'failed'}
-                    {#if msg.reason}
-                      <span class="text-red-500 font-normal">({msg.reason})</span>
-                    {/if}
-                  </summary>
-                  <div class="mt-1 rounded-lg border text-[11px] font-mono overflow-hidden {msg.success ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}">
-                    {#if msg.arguments}
-                      <div class="px-3 py-1.5 border-b {msg.success ? 'border-emerald-200' : 'border-red-200'}">
-                        <span class="text-gray-500">args:</span> {truncate(msg.arguments, 300)}
-                      </div>
-                    {/if}
-                    {#if msg.output}
-                      <div class="px-3 py-1.5">
-                        <pre class="whitespace-pre-wrap">{truncate(msg.output, 500)}</pre>
-                      </div>
-                    {/if}
-                  </div>
-                </details>
+              <div class="max-w-[85%] w-full">
+                <div class="text-[11px] font-mono flex items-center gap-1.5 py-1 {msg.success ? 'text-emerald-600' : 'text-red-600'}">
+                  <span class="w-1.5 h-1.5 rounded-full {msg.success ? 'bg-emerald-400' : 'bg-red-400'}"></span>
+                  {msg.tool}: {msg.success ? 'success' : 'failed'}
+                  {#if msg.reason}
+                    <span class="text-red-500 font-normal">({msg.reason})</span>
+                  {/if}
+                </div>
+                <div class="rounded-lg border text-[11px] font-mono overflow-hidden {msg.success ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}">
+                  {#if msg.arguments}
+                    <div class="px-3 py-1.5 border-b {msg.success ? 'border-emerald-200' : 'border-red-200'}">
+                      <div class="text-gray-500 mb-0.5">args:</div>
+                      <pre class="whitespace-pre-wrap text-gray-700">{expandedTools[key + '_args'] ? argsP.full : argsP.preview}</pre>
+                      {#if argsP.needsExpand}
+                        <button class="text-[10px] text-violet-500 hover:text-violet-700 mt-1" on:click={() => { expandedTools[key + '_args'] = !expandedTools[key + '_args']; expandedTools = expandedTools }}>
+                          {expandedTools[key + '_args'] ? 'Show less' : 'Show more...'}
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#if msg.output}
+                    <div class="px-3 py-1.5">
+                      <div class="text-gray-500 mb-0.5">output:</div>
+                      <pre class="whitespace-pre-wrap text-gray-700">{expandedTools[key + '_out'] ? outP.full : outP.preview}</pre>
+                      {#if outP.needsExpand}
+                        <button class="text-[10px] text-violet-500 hover:text-violet-700 mt-1" on:click={() => { expandedTools[key + '_out'] = !expandedTools[key + '_out']; expandedTools = expandedTools }}>
+                          {expandedTools[key + '_out'] ? 'Show less' : 'Show more...'}
+                        </button>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
               </div>
             </div>
           {/if}

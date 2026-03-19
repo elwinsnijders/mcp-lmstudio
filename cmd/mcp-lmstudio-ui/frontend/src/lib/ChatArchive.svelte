@@ -58,18 +58,18 @@
     for (const ev of evts) {
       switch (ev.type) {
         case 'user_message':
-          if (pendingDelta) {
-            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
-            pendingDelta = ''
+          if (pendingDelta.trim()) {
+            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
           }
+          pendingDelta = ''
           pendingReasoning = ''
           msgs.push({ role: 'user', content: ev.content, ts: ev.ts })
           break
         case 'reasoning_start':
-          if (pendingDelta) {
-            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
-            pendingDelta = ''
+          if (pendingDelta.trim()) {
+            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
           }
+          pendingDelta = ''
           pendingReasoning = ''
           break
         case 'reasoning_delta':
@@ -93,17 +93,17 @@
           pendingDelta = ''
           break
         case 'tool_use':
-          if (pendingDelta) {
-            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
-            pendingDelta = ''
+          if (pendingDelta.trim()) {
+            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
           }
+          pendingDelta = ''
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool, ts: ev.ts })
           break
         case 'tool_call_start':
-          if (pendingDelta) {
-            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
-            pendingDelta = ''
+          if (pendingDelta.trim()) {
+            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
           }
+          pendingDelta = ''
           break
         case 'tool_call_result':
           msgs.push({
@@ -157,10 +157,16 @@
     expanded = expanded
   }
 
-  function truncate(s, max) {
-    if (!s) return ''
-    return s.length > max ? s.slice(0, max) + '...' : s
+  const PREVIEW_LINES = 5
+
+  function previewLines(s) {
+    if (!s) return { preview: '', full: '', needsExpand: false }
+    const lines = s.split('\n')
+    if (lines.length <= PREVIEW_LINES) return { preview: s, full: s, needsExpand: false }
+    return { preview: lines.slice(0, PREVIEW_LINES).join('\n'), full: s, needsExpand: true }
   }
+
+  let expandedTools = {}
 
   function getSessionInfo(id) {
     return sessions.find((s) => s.id === id)
@@ -286,6 +292,9 @@
               </div>
 
             {:else if msg.role === 'tool_result'}
+              {@const argsP = previewLines(msg.arguments)}
+              {@const outP = previewLines(msg.output)}
+              {@const tkey = `${i}`}
               <div class="pl-3 border-l-2 border-amber-200">
                 <div class="rounded overflow-hidden border text-xs font-mono {msg.success ? 'border-emerald-200' : 'border-red-200'}">
                   <div class="px-3 py-1.5 {msg.success ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}">
@@ -296,12 +305,24 @@
                   </div>
                   {#if msg.arguments}
                     <div class="px-3 py-1.5 border-t {msg.success ? 'border-emerald-200 bg-emerald-50/50' : 'border-red-200 bg-red-50/50'} text-gray-600">
-                      <span class="text-gray-400">args:</span> {truncate(msg.arguments, 500)}
+                      <div class="text-gray-400 mb-0.5">args:</div>
+                      <pre class="whitespace-pre-wrap">{expandedTools[tkey + '_args'] ? argsP.full : argsP.preview}</pre>
+                      {#if argsP.needsExpand}
+                        <button class="text-[10px] text-violet-500 hover:text-violet-700 mt-1" on:click={() => { expandedTools[tkey + '_args'] = !expandedTools[tkey + '_args']; expandedTools = expandedTools }}>
+                          {expandedTools[tkey + '_args'] ? 'Show less' : 'Show more...'}
+                        </button>
+                      {/if}
                     </div>
                   {/if}
                   {#if msg.output}
                     <div class="px-3 py-1.5 border-t {msg.success ? 'border-emerald-200 bg-white' : 'border-red-200 bg-white'} text-gray-700">
-                      <pre class="whitespace-pre-wrap">{truncate(msg.output, 1000)}</pre>
+                      <div class="text-gray-400 mb-0.5">output:</div>
+                      <pre class="whitespace-pre-wrap">{expandedTools[tkey + '_out'] ? outP.full : outP.preview}</pre>
+                      {#if outP.needsExpand}
+                        <button class="text-[10px] text-violet-500 hover:text-violet-700 mt-1" on:click={() => { expandedTools[tkey + '_out'] = !expandedTools[tkey + '_out']; expandedTools = expandedTools }}>
+                          {expandedTools[tkey + '_out'] ? 'Show less' : 'Show more...'}
+                        </button>
+                      {/if}
                     </div>
                   {/if}
                 </div>
