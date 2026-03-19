@@ -247,7 +247,7 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, fmt.Sprintf("%v", args.Task))
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, sess.ID))
+		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, artStore, logger, sess.ID))
 		if err != nil {
 			if chatWriter != nil {
 				chatWriter.WriteError(sess.ID, err.Error())
@@ -256,7 +256,6 @@ func main() {
 		}
 
 		fullText := formatOutput(chatResp.Output)
-		storeArtifacts(artStore, logger, sess.ID, chatResp.Output)
 
 		if chatWriter != nil {
 			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
@@ -316,7 +315,7 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, args.Message)
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, sess.ID))
+		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, artStore, logger, sess.ID))
 		if err != nil {
 			if chatWriter != nil {
 				chatWriter.WriteError(sess.ID, err.Error())
@@ -325,7 +324,6 @@ func main() {
 		}
 
 		fullText := formatOutput(chatResp.Output)
-		storeArtifacts(artStore, logger, sess.ID, chatResp.Output)
 
 		if chatWriter != nil {
 			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
@@ -658,7 +656,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-func buildStreamCallbacks(cw *chatlog.Writer, sessionID string) lmstudio.StreamCallbacks {
+func buildStreamCallbacks(cw *chatlog.Writer, as *artifacts.Store, logger *log.Logger, sessionID string) lmstudio.StreamCallbacks {
 	var lastStatusProgress float64
 	return lmstudio.StreamCallbacks{
 		OnDelta: func(delta string) {
@@ -692,6 +690,11 @@ func buildStreamCallbacks(cw *chatlog.Writer, sessionID string) lmstudio.StreamC
 				}
 				cw.WriteToolCallResult(sessionID, tc.Tool, args, tc.Output, tc.Reason, tc.Success)
 			}
+			if as != nil && tc.Success && tc.Output != "" {
+				if err := as.Store(sessionID, tc.Tool, tc.Arguments, tc.Output, nil); err != nil {
+					logger.Printf("Warning: failed to store artifact for %s/%s: %v", sessionID, tc.Tool, err)
+				}
+			}
 		},
 		OnStatus: func(phase string, progress float64) {
 			if cw == nil {
@@ -711,15 +714,3 @@ func buildStreamCallbacks(cw *chatlog.Writer, sessionID string) lmstudio.StreamC
 	}
 }
 
-func storeArtifacts(store *artifacts.Store, logger *log.Logger, sessionID string, output []lmstudio.Output) {
-	if store == nil {
-		return
-	}
-	for _, item := range output {
-		if item.Type == "tool_call" && item.Output != "" {
-			if err := store.Store(sessionID, item.Tool, item.Arguments, item.Output, item.ProviderInfo); err != nil {
-				logger.Printf("Warning: failed to store artifact for %s/%s: %v", sessionID, item.Tool, err)
-			}
-		}
-	}
-}
