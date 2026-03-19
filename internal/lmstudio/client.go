@@ -70,8 +70,12 @@ func (c *Client) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, err
 }
 
 type StreamCallbacks struct {
-	OnDelta    func(text string)
-	OnToolCall func(event ToolCallEvent)
+	OnDelta          func(text string)
+	OnReasoning      func(phase, text string) // phase: "start", "delta", "end"
+	OnToolCallStart  func(tool string)
+	OnToolCallResult func(event ToolCallEvent)
+	OnStatus         func(phase string, progress float64) // prompt_processing, model_load
+	OnError          func(errType, message string)
 }
 
 // ChatStream sends a streaming chat request via LM Studio's v1 SSE API.
@@ -133,7 +137,7 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 	var pendingTool ToolCallEvent
 	eventCount := 0
 
-	const maxBuf = 1024 * 1024 // 1 MB for large reasoning responses
+	const maxBuf = 1024 * 1024
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, maxBuf), maxBuf)
 
@@ -158,6 +162,8 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 		eventCount++
 
 		switch event.Type {
+
+		// ── Message ──────────────────────────────────────────────
 		case "message.delta":
 			if event.Content != "" {
 				accumulated.WriteString(event.Content)
@@ -166,8 +172,36 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 				}
 			}
 
+		// ── Reasoning ────────────────────────────────────────────
+		case "reasoning.start":
+			if cb.OnReasoning != nil {
+				cb.OnReasoning("start", "")
+			}
+		case "reasoning.delta":
+			if cb.OnReasoning != nil {
+				cb.OnReasoning("delta", event.Content)
+			}
+		case "reasoning.end":
+			if cb.OnReasoning != nil {
+				cb.OnReasoning("end", "")
+			}
+
+		case "prompt_processing.start", "prompt_processing.progress", "prompt_processing.end":
+			if cb.OnStatus != nil {
+				cb.OnStatus("prompt_processing", event.Progress)
+			}
+
+		case "model_load.start", "model_load.progress", "model_load.end":
+			if cb.OnStatus != nil {
+				cb.OnStatus("model_load", event.Progress)
+			}
+
+		// ── Tool calls ───────────────────────────────────────────
 		case "tool_call.start":
 			pendingTool = ToolCallEvent{Tool: event.Tool}
+			if cb.OnToolCallStart != nil {
+				cb.OnToolCallStart(event.Tool)
+			}
 
 		case "tool_call.arguments":
 			pendingTool.Arguments = event.Arguments
@@ -175,19 +209,26 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 		case "tool_call.success":
 			pendingTool.Output = event.Output
 			pendingTool.Success = true
-			if cb.OnToolCall != nil {
-				cb.OnToolCall(pendingTool)
+			if cb.OnToolCallResult != nil {
+				cb.OnToolCallResult(pendingTool)
 			}
 			pendingTool = ToolCallEvent{}
 
 		case "tool_call.failure":
 			pendingTool.Success = false
-			pendingTool.Reason = event.Content
-			if cb.OnToolCall != nil {
-				cb.OnToolCall(pendingTool)
+			pendingTool.Reason = event.Reason
+			if cb.OnToolCallResult != nil {
+				cb.OnToolCallResult(pendingTool)
 			}
 			pendingTool = ToolCallEvent{}
 
+		// ── Error ────────────────────────────────────────────────
+		case "error":
+			if cb.OnError != nil && event.Error != nil {
+				cb.OnError(event.Error.Type, event.Error.Message)
+			}
+
+		// ── End ──────────────────────────────────────────────────
 		case "chat.end":
 			if event.Result != nil {
 				finalResponse = event.Result

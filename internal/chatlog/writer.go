@@ -92,6 +92,58 @@ func (w *Writer) WriteError(sessionID, content string) error {
 	})
 }
 
+func (w *Writer) WriteReasoningStart(sessionID string) error {
+	return w.Write(ChatEvent{
+		Type:      EventReasoningStart,
+		SessionID: sessionID,
+	})
+}
+
+func (w *Writer) WriteReasoningDelta(sessionID, content string) error {
+	return w.Write(ChatEvent{
+		Type:      EventReasoningDelta,
+		SessionID: sessionID,
+		Content:   content,
+	})
+}
+
+func (w *Writer) WriteReasoningEnd(sessionID string) error {
+	return w.Write(ChatEvent{
+		Type:      EventReasoningEnd,
+		SessionID: sessionID,
+	})
+}
+
+func (w *Writer) WriteStatus(sessionID, phase string, progress float64) error {
+	p := progress
+	return w.Write(ChatEvent{
+		Type:      EventStatus,
+		SessionID: sessionID,
+		Phase:     phase,
+		Progress:  &p,
+	})
+}
+
+func (w *Writer) WriteToolCallStart(sessionID, tool string) error {
+	return w.Write(ChatEvent{
+		Type:      EventToolCallStart,
+		SessionID: sessionID,
+		Tool:      tool,
+	})
+}
+
+func (w *Writer) WriteToolCallResult(sessionID, tool, arguments, output, reason string, success bool) error {
+	return w.Write(ChatEvent{
+		Type:      EventToolCallResult,
+		SessionID: sessionID,
+		Tool:      tool,
+		Arguments: arguments,
+		Output:    output,
+		Reason:    reason,
+		Success:   &success,
+	})
+}
+
 // ReadAll reads all chat events for a session.
 func ReadAll(dir, sessionID string) ([]ChatEvent, error) {
 	path := filepath.Join(dir, sessionID+".jsonl")

@@ -3,11 +3,17 @@ package chatlog
 import "time"
 
 const (
-	EventUserMessage = "user_message"
-	EventAIDelta     = "ai_delta"
-	EventAIComplete  = "ai_complete"
-	EventToolUse     = "tool_use"
-	EventError       = "error"
+	EventUserMessage    = "user_message"
+	EventAIDelta        = "ai_delta"
+	EventAIComplete     = "ai_complete"
+	EventToolUse        = "tool_use"
+	EventError          = "error"
+	EventReasoningStart = "reasoning_start"
+	EventReasoningDelta = "reasoning_delta"
+	EventReasoningEnd   = "reasoning_end"
+	EventToolCallStart  = "tool_call_start"
+	EventToolCallResult = "tool_call_result"
+	EventStatus         = "status"
 )
 
 type ChatEvent struct {
@@ -18,6 +24,11 @@ type ChatEvent struct {
 	Stats     *ChatStats `json:"stats,omitempty"`
 	Tool      string     `json:"tool,omitempty"`
 	Arguments string     `json:"arguments,omitempty"`
+	Phase     string     `json:"phase,omitempty"`
+	Progress  *float64   `json:"progress,omitempty"`
+	Success   *bool      `json:"success,omitempty"`
+	Output    string     `json:"output,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
 }
 
 type ChatStats struct {

@@ -29,6 +29,11 @@ export namespace chatlog {
 	    stats?: ChatStats;
 	    tool?: string;
 	    arguments?: string;
+	    phase?: string;
+	    progress?: number;
+	    success?: boolean;
+	    output?: string;
+	    reason?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatEvent(source);
@@ -43,6 +48,11 @@ export namespace chatlog {
 	        this.stats = this.convertValues(source["stats"], ChatStats);
 	        this.tool = source["tool"];
 	        this.arguments = source["arguments"];
+	        this.phase = source["phase"];
+	        this.progress = source["progress"];
+	        this.success = source["success"];
+	        this.output = source["output"];
+	        this.reason = source["reason"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

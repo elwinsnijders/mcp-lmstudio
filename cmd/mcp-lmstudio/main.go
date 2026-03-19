@@ -247,22 +247,7 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, fmt.Sprintf("%v", args.Task))
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, lmstudio.StreamCallbacks{
-			OnDelta: func(delta string) {
-				if chatWriter != nil {
-					chatWriter.WriteDelta(sess.ID, delta)
-				}
-			},
-			OnToolCall: func(tc lmstudio.ToolCallEvent) {
-				if chatWriter != nil {
-					status := "success"
-					if !tc.Success {
-						status = "failed: " + tc.Reason
-					}
-					chatWriter.WriteToolUse(sess.ID, tc.Tool, status)
-				}
-			},
-		})
+		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, sess.ID))
 		if err != nil {
 			if chatWriter != nil {
 				chatWriter.WriteError(sess.ID, err.Error())
@@ -331,22 +316,7 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, args.Message)
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, lmstudio.StreamCallbacks{
-			OnDelta: func(delta string) {
-				if chatWriter != nil {
-					chatWriter.WriteDelta(sess.ID, delta)
-				}
-			},
-			OnToolCall: func(tc lmstudio.ToolCallEvent) {
-				if chatWriter != nil {
-					status := "success"
-					if !tc.Success {
-						status = "failed: " + tc.Reason
-					}
-					chatWriter.WriteToolUse(sess.ID, tc.Tool, status)
-				}
-			},
-		})
+		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, sess.ID))
 		if err != nil {
 			if chatWriter != nil {
 				chatWriter.WriteError(sess.ID, err.Error())
@@ -686,6 +656,59 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func buildStreamCallbacks(cw *chatlog.Writer, sessionID string) lmstudio.StreamCallbacks {
+	var lastStatusProgress float64
+	return lmstudio.StreamCallbacks{
+		OnDelta: func(delta string) {
+			if cw != nil {
+				cw.WriteDelta(sessionID, delta)
+			}
+		},
+		OnReasoning: func(phase, text string) {
+			if cw == nil {
+				return
+			}
+			switch phase {
+			case "start":
+				cw.WriteReasoningStart(sessionID)
+			case "delta":
+				cw.WriteReasoningDelta(sessionID, text)
+			case "end":
+				cw.WriteReasoningEnd(sessionID)
+			}
+		},
+		OnToolCallStart: func(tool string) {
+			if cw != nil {
+				cw.WriteToolCallStart(sessionID, tool)
+			}
+		},
+		OnToolCallResult: func(tc lmstudio.ToolCallEvent) {
+			if cw != nil {
+				args := ""
+				if tc.Arguments != nil {
+					args = string(tc.Arguments)
+				}
+				cw.WriteToolCallResult(sessionID, tc.Tool, args, tc.Output, tc.Reason, tc.Success)
+			}
+		},
+		OnStatus: func(phase string, progress float64) {
+			if cw == nil {
+				return
+			}
+			if progress-lastStatusProgress < 0.05 && progress < 1 {
+				return
+			}
+			lastStatusProgress = progress
+			cw.WriteStatus(sessionID, phase, progress)
+		},
+		OnError: func(errType, message string) {
+			if cw != nil {
+				cw.WriteError(sessionID, errType+": "+message)
+			}
+		},
+	}
 }
 
 func storeArtifacts(store *artifacts.Store, logger *log.Logger, sessionID string, output []lmstudio.Output) {

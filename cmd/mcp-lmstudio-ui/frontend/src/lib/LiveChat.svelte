@@ -7,6 +7,10 @@
   let selectedSession = ''
   let messages = []
   let streamBuffer = ''
+  let reasoningBuffer = ''
+  let isReasoning = false
+  let statusPhase = ''
+  let statusProgress = 0
   let autoScroll = true
   let chatContainer
   let refreshInterval
@@ -44,6 +48,10 @@
 
     messages = []
     streamBuffer = ''
+    reasoningBuffer = ''
+    isReasoning = false
+    statusPhase = ''
+    statusProgress = 0
 
     try {
       const events = await LoadChatLog(sessionId)
@@ -59,6 +67,7 @@
   function processHistoricEvents(events) {
     let msgs = []
     let pendingAI = ''
+    let pendingReasoning = ''
 
     for (const ev of events) {
       switch (ev.type) {
@@ -67,7 +76,20 @@
             msgs.push({ role: 'assistant', content: pendingAI, stats: null })
             pendingAI = ''
           }
+          pendingReasoning = ''
           msgs.push({ role: 'user', content: ev.content })
+          break
+        case 'reasoning_start':
+          pendingReasoning = ''
+          break
+        case 'reasoning_delta':
+          pendingReasoning += ev.content || ''
+          break
+        case 'reasoning_end':
+          if (pendingReasoning) {
+            msgs.push({ role: 'reasoning', content: pendingReasoning })
+            pendingReasoning = ''
+          }
           break
         case 'ai_delta':
           pendingAI += ev.content
@@ -83,9 +105,28 @@
         case 'tool_use':
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
           break
+        case 'tool_call_start':
+          msgs.push({ role: 'tool_start', tool: ev.tool })
+          break
+        case 'tool_call_result':
+          msgs.push({
+            role: 'tool_result',
+            tool: ev.tool,
+            arguments: ev.arguments,
+            output: ev.output,
+            success: ev.success,
+            reason: ev.reason
+          })
+          break
+        case 'status':
+          break
       }
     }
 
+    if (pendingReasoning) {
+      reasoningBuffer = pendingReasoning
+      isReasoning = true
+    }
     if (pendingAI) {
       streamBuffer = pendingAI
     }
@@ -96,31 +137,86 @@
   async function onChatEvent(event) {
     switch (event.type) {
       case 'user_message':
-        if (streamBuffer) {
-          messages = [...messages, { role: 'assistant', content: streamBuffer, stats: null }]
-          streamBuffer = ''
-        }
+        flushBuffers()
         messages = [...messages, { role: 'user', content: event.content }]
+        statusPhase = ''
         break
+
+      case 'status':
+        statusPhase = event.phase || ''
+        statusProgress = event.progress ?? 0
+        break
+
+      case 'reasoning_start':
+        reasoningBuffer = ''
+        isReasoning = true
+        break
+      case 'reasoning_delta':
+        reasoningBuffer += event.content || ''
+        reasoningBuffer = reasoningBuffer
+        break
+      case 'reasoning_end':
+        if (reasoningBuffer) {
+          messages = [...messages, { role: 'reasoning', content: reasoningBuffer }]
+        }
+        reasoningBuffer = ''
+        isReasoning = false
+        break
+
       case 'ai_delta':
+        statusPhase = ''
         streamBuffer += event.content
         streamBuffer = streamBuffer
         break
+
       case 'ai_complete':
+        isReasoning = false
+        reasoningBuffer = ''
+        statusPhase = ''
         messages = [...messages, { role: 'assistant', content: event.content || streamBuffer, stats: event.stats }]
         streamBuffer = ''
         break
+
       case 'error':
         messages = [...messages, { role: 'error', content: event.content }]
         streamBuffer = ''
+        isReasoning = false
+        reasoningBuffer = ''
+        statusPhase = ''
         break
+
       case 'tool_use':
         messages = [...messages, { role: 'tool', content: event.content, tool: event.tool }]
+        break
+      case 'tool_call_start':
+        messages = [...messages, { role: 'tool_start', tool: event.tool }]
+        break
+      case 'tool_call_result':
+        messages = [...messages, {
+          role: 'tool_result',
+          tool: event.tool,
+          arguments: event.arguments,
+          output: event.output,
+          success: event.success,
+          reason: event.reason
+        }]
         break
     }
 
     if (autoScroll) {
       await scrollToBottom()
+    }
+  }
+
+  function flushBuffers() {
+    if (reasoningBuffer) {
+      messages = [...messages, { role: 'reasoning', content: reasoningBuffer }]
+      reasoningBuffer = ''
+      isReasoning = false
+    }
+    if (streamBuffer) {
+      messages = [...messages, { role: 'assistant', content: streamBuffer, stats: null }]
+      streamBuffer = ''
     }
   }
 
@@ -145,6 +241,17 @@
     if (stats.output_tokens) parts.push(`out: ${stats.output_tokens}`)
     if (stats.tokens_per_sec) parts.push(`${stats.tokens_per_sec.toFixed(1)} t/s`)
     return parts.join(' | ')
+  }
+
+  function truncate(s, max) {
+    if (!s) return ''
+    return s.length > max ? s.slice(0, max) + '...' : s
+  }
+
+  function statusLabel(phase) {
+    if (phase === 'prompt_processing') return 'Processing prompt'
+    if (phase === 'model_load') return 'Loading model'
+    return phase
   }
 </script>
 
@@ -178,9 +285,9 @@
     <div
       bind:this={chatContainer}
       on:scroll={handleScroll}
-      class="flex-1 overflow-y-auto p-4 space-y-4"
+      class="flex-1 overflow-y-auto p-4 space-y-3"
     >
-      {#if messages.length === 0 && !streamBuffer}
+      {#if messages.length === 0 && !streamBuffer && !reasoningBuffer && !statusPhase}
         <div class="flex-1 flex items-center justify-center h-full">
           <div class="text-center text-gray-400">
             <svg class="w-16 h-16 text-gray-200 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1">
@@ -203,13 +310,29 @@
           </div>
         </div>
       {:else}
-        {#each messages as msg, i}
+        {#each messages as msg}
           {#if msg.role === 'user'}
             <div class="flex justify-end">
               <div class="max-w-[80%] px-4 py-3 rounded-2xl rounded-br-md bg-violet-600 text-white text-sm">
                 <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
               </div>
             </div>
+
+          {:else if msg.role === 'reasoning'}
+            <div class="flex justify-start">
+              <div class="max-w-[85%]">
+                <details class="group">
+                  <summary class="cursor-pointer text-xs text-blue-500 hover:text-blue-600 font-medium flex items-center gap-1.5 py-1 select-none">
+                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                    Reasoning ({msg.content.length} chars)
+                  </summary>
+                  <div class="mt-1 px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-xs leading-relaxed">
+                    <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
+                  </div>
+                </details>
+              </div>
+            </div>
+
           {:else if msg.role === 'assistant'}
             <div class="flex justify-start">
               <div class="max-w-[80%]">
@@ -223,21 +346,90 @@
                 {/if}
               </div>
             </div>
+
           {:else if msg.role === 'error'}
             <div class="flex justify-center">
               <div class="px-4 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
                 {msg.content}
               </div>
             </div>
+
           {:else if msg.role === 'tool'}
             <div class="flex justify-center">
               <div class="px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-[11px] font-mono">
                 Tool: {msg.tool || 'unknown'} {msg.content ? '- ' + msg.content : ''}
               </div>
             </div>
+
+          {:else if msg.role === 'tool_start'}
+            <div class="flex justify-center">
+              <div class="px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-100 text-amber-600 text-[11px] font-mono flex items-center gap-1.5">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                Calling: {msg.tool}
+              </div>
+            </div>
+
+          {:else if msg.role === 'tool_result'}
+            <div class="flex justify-center">
+              <div class="max-w-[85%]">
+                <details class="group">
+                  <summary class="cursor-pointer text-[11px] font-mono flex items-center gap-1.5 py-1 select-none {msg.success ? 'text-emerald-600' : 'text-red-600'}">
+                    <span class="w-1.5 h-1.5 rounded-full {msg.success ? 'bg-emerald-400' : 'bg-red-400'}"></span>
+                    {msg.tool}: {msg.success ? 'success' : 'failed'}
+                    {#if msg.reason}
+                      <span class="text-red-500 font-normal">({msg.reason})</span>
+                    {/if}
+                  </summary>
+                  <div class="mt-1 rounded-lg border text-[11px] font-mono overflow-hidden {msg.success ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}">
+                    {#if msg.arguments}
+                      <div class="px-3 py-1.5 border-b {msg.success ? 'border-emerald-200' : 'border-red-200'}">
+                        <span class="text-gray-500">args:</span> {truncate(msg.arguments, 300)}
+                      </div>
+                    {/if}
+                    {#if msg.output}
+                      <div class="px-3 py-1.5">
+                        <pre class="whitespace-pre-wrap">{truncate(msg.output, 500)}</pre>
+                      </div>
+                    {/if}
+                  </div>
+                </details>
+              </div>
+            </div>
           {/if}
         {/each}
 
+        <!-- Live status indicator -->
+        {#if statusPhase}
+          <div class="flex justify-center">
+            <div class="px-4 py-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 text-xs flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+              {statusLabel(statusPhase)}
+              {#if statusProgress > 0 && statusProgress < 1}
+                <div class="w-20 h-1.5 bg-indigo-100 rounded-full overflow-hidden">
+                  <div class="h-full bg-indigo-500 rounded-full transition-all" style="width: {statusProgress * 100}%"></div>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Live reasoning stream -->
+        {#if isReasoning && reasoningBuffer}
+          <div class="flex justify-start">
+            <div class="max-w-[85%]">
+              <div class="text-xs text-blue-500 font-medium flex items-center gap-1.5 mb-1">
+                <svg class="w-3.5 h-3.5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                Thinking...
+              </div>
+              <div class="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-xs leading-relaxed">
+                <pre class="whitespace-pre-wrap font-sans">{reasoningBuffer}</pre>
+                <span class="inline-block w-1.5 h-3 bg-blue-400 animate-pulse ml-0.5 align-text-bottom"></span>
+              </div>
+            </div>
+          </div>
+        {/if}
+
+        <!-- Live message stream -->
         {#if streamBuffer}
           <div class="flex justify-start">
             <div class="max-w-[80%]">
@@ -251,7 +443,7 @@
       {/if}
     </div>
 
-    {#if !autoScroll && (messages.length > 0 || streamBuffer)}
+    {#if !autoScroll && (messages.length > 0 || streamBuffer || reasoningBuffer)}
       <div class="border-t border-gray-100 px-4 py-2 text-center">
         <button
           class="text-xs text-violet-600 hover:text-violet-700 font-medium"

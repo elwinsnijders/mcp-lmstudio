@@ -27,6 +27,16 @@ type StreamEvent struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Output    string          `json:"output,omitempty"`
 	Result    *ChatResponse   `json:"result,omitempty"`
+	Progress  float64         `json:"progress,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Error     *StreamError    `json:"error,omitempty"`
+}
+
+type StreamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
+	Param   string `json:"param,omitempty"`
 }
 
 type ToolCallEvent struct {
