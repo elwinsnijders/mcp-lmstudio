@@ -1,6 +1,14 @@
 <script>
   import { onMount } from 'svelte'
   import { ListSessions, LoadChatLog } from '../../wailsjs/go/main/App'
+  import { marked } from 'marked'
+
+  marked.setOptions({ breaks: true, gfm: true })
+
+  function md(text) {
+    if (!text) return ''
+    return marked.parse(text)
+  }
 
   export let sessionId = null
 
@@ -45,6 +53,7 @@
   function collapseEvents(evts) {
     let msgs = []
     let pendingDelta = ''
+    let pendingReasoning = ''
 
     for (const ev of evts) {
       switch (ev.type) {
@@ -53,7 +62,24 @@
             msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
             pendingDelta = ''
           }
+          pendingReasoning = ''
           msgs.push({ role: 'user', content: ev.content, ts: ev.ts })
+          break
+        case 'reasoning_start':
+          if (pendingDelta) {
+            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
+            pendingDelta = ''
+          }
+          pendingReasoning = ''
+          break
+        case 'reasoning_delta':
+          pendingReasoning += ev.content || ''
+          break
+        case 'reasoning_end':
+          if (pendingReasoning) {
+            msgs.push({ role: 'reasoning', content: pendingReasoning, ts: ev.ts })
+            pendingReasoning = ''
+          }
           break
         case 'ai_delta':
           pendingDelta += ev.content
@@ -67,11 +93,37 @@
           pendingDelta = ''
           break
         case 'tool_use':
+          if (pendingDelta) {
+            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
+            pendingDelta = ''
+          }
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool, ts: ev.ts })
+          break
+        case 'tool_call_start':
+          if (pendingDelta) {
+            msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: ev.ts })
+            pendingDelta = ''
+          }
+          break
+        case 'tool_call_result':
+          msgs.push({
+            role: 'tool_result',
+            tool: ev.tool,
+            arguments: ev.arguments,
+            output: ev.output,
+            success: ev.success,
+            reason: ev.reason,
+            ts: ev.ts
+          })
+          break
+        case 'status':
           break
       }
     }
 
+    if (pendingReasoning) {
+      msgs.push({ role: 'reasoning', content: pendingReasoning, ts: '' })
+    }
     if (pendingDelta) {
       msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: '' })
     }
@@ -103,6 +155,11 @@
   function toggleRaw(idx) {
     expanded[idx] = !expanded[idx]
     expanded = expanded
+  }
+
+  function truncate(s, max) {
+    if (!s) return ''
+    return s.length > max ? s.slice(0, max) + '...' : s
   }
 
   function getSessionInfo(id) {
@@ -166,11 +223,16 @@
               <span class="text-[10px] font-semibold uppercase tracking-wider
                 {msg.role === 'user' ? 'text-violet-500' :
                  msg.role === 'assistant' ? 'text-emerald-600' :
+                 msg.role === 'reasoning' ? 'text-blue-500' :
                  msg.role === 'error' ? 'text-red-500' :
+                 msg.role === 'tool_start' || msg.role === 'tool_result' ? 'text-amber-600' :
                  'text-amber-600'}">
                 {msg.role === 'user' ? 'User' :
                  msg.role === 'assistant' ? 'AI' :
+                 msg.role === 'reasoning' ? 'Reasoning' :
                  msg.role === 'error' ? 'Error' :
+                 msg.role === 'tool_start' ? 'Tool Call' :
+                 msg.role === 'tool_result' ? 'Tool Result' :
                  'Tool'}
               </span>
               <span class="text-[10px] text-gray-300">{formatTime(msg.ts)}</span>
@@ -186,23 +248,62 @@
               <div class="pl-3 border-l-2 border-violet-200">
                 <pre class="whitespace-pre-wrap text-sm text-gray-800 font-sans leading-relaxed">{msg.content}</pre>
               </div>
+
+            {:else if msg.role === 'reasoning'}
+              <div class="pl-3 border-l-2 border-blue-200">
+                <div class="px-3 py-2 bg-blue-50 rounded text-xs text-blue-800 leading-relaxed">
+                  <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
+                </div>
+              </div>
+
             {:else if msg.role === 'assistant'}
-              <div class="pl-3 border-l-2 border-emerald-200">
-                <pre class="whitespace-pre-wrap text-sm text-gray-800 font-sans leading-relaxed">{msg.content}</pre>
+              <div class="pl-3 border-l-2 border-emerald-200 prose prose-sm prose-gray max-w-none">
+                {@html md(msg.content)}
               </div>
               {#if expanded[i] && msg.stats}
                 <div class="mt-2 ml-3 px-3 py-2 bg-slate-50 rounded text-[11px] text-slate-500 font-mono">
                   {formatStats(msg.stats)}
                 </div>
               {/if}
+
             {:else if msg.role === 'error'}
               <div class="pl-3 border-l-2 border-red-200">
                 <div class="px-3 py-2 bg-red-50 rounded text-sm text-red-700">{msg.content}</div>
               </div>
+
             {:else if msg.role === 'tool'}
               <div class="pl-3 border-l-2 border-amber-200">
                 <div class="px-3 py-2 bg-amber-50 rounded text-xs font-mono text-amber-700">
                   {msg.tool || 'tool'}: {msg.content}
+                </div>
+              </div>
+
+            {:else if msg.role === 'tool_start'}
+              <div class="pl-3 border-l-2 border-amber-200">
+                <div class="px-3 py-1.5 bg-amber-50 rounded text-xs font-mono text-amber-600">
+                  {msg.tool ? `Calling: ${msg.tool}` : 'Preparing tool call...'}
+                </div>
+              </div>
+
+            {:else if msg.role === 'tool_result'}
+              <div class="pl-3 border-l-2 border-amber-200">
+                <div class="rounded overflow-hidden border text-xs font-mono {msg.success ? 'border-emerald-200' : 'border-red-200'}">
+                  <div class="px-3 py-1.5 {msg.success ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}">
+                    {msg.tool}: {msg.success ? 'success' : 'failed'}
+                    {#if msg.reason}
+                      <span class="text-red-500"> ({msg.reason})</span>
+                    {/if}
+                  </div>
+                  {#if msg.arguments}
+                    <div class="px-3 py-1.5 border-t {msg.success ? 'border-emerald-200 bg-emerald-50/50' : 'border-red-200 bg-red-50/50'} text-gray-600">
+                      <span class="text-gray-400">args:</span> {truncate(msg.arguments, 500)}
+                    </div>
+                  {/if}
+                  {#if msg.output}
+                    <div class="px-3 py-1.5 border-t {msg.success ? 'border-emerald-200 bg-white' : 'border-red-200 bg-white'} text-gray-700">
+                      <pre class="whitespace-pre-wrap">{truncate(msg.output, 1000)}</pre>
+                    </div>
+                  {/if}
                 </div>
               </div>
             {/if}

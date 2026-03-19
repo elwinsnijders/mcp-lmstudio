@@ -6,3 +6,31 @@ body {
   margin: 0;
   overflow: hidden;
 }
+
+.prose pre {
+  @apply bg-gray-800 text-gray-100 rounded-lg text-xs leading-relaxed overflow-x-auto;
+}
+
+.prose code:not(pre code) {
+  @apply bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded text-xs font-mono;
+}
+
+.prose table {
+  @apply text-xs;
+}
+
+.prose p:last-child {
+  @apply mb-0;
+}
+
+.prose p:first-child {
+  @apply mt-0;
+}
+
+.prose h1, .prose h2, .prose h3 {
+  @apply mt-3 mb-2;
+}
+
+.prose hr {
+  @apply my-3;
+}

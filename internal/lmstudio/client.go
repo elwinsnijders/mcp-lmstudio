@@ -135,6 +135,7 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 	var accumulated strings.Builder
 	var finalResponse *ChatResponse
 	var pendingTool ToolCallEvent
+	toolStartEmitted := false
 	eventCount := 0
 
 	const maxBuf = 1024 * 1024
@@ -198,29 +199,61 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 
 		// ── Tool calls ───────────────────────────────────────────
 		case "tool_call.start":
-			pendingTool = ToolCallEvent{Tool: event.Tool}
+			toolName := event.ToolName()
+			c.logger.Printf("ChatStream: tool_call.start tool=%q raw=%s", toolName, data)
+			pendingTool = ToolCallEvent{Tool: toolName}
+			toolStartEmitted = true
 			if cb.OnToolCallStart != nil {
-				cb.OnToolCallStart(event.Tool)
+				cb.OnToolCallStart(toolName)
 			}
 
 		case "tool_call.arguments":
+			if name := event.ToolName(); name != "" && pendingTool.Tool == "" {
+				pendingTool.Tool = name
+			}
+			if !toolStartEmitted && pendingTool.Tool != "" {
+				toolStartEmitted = true
+				if cb.OnToolCallStart != nil {
+					cb.OnToolCallStart(pendingTool.Tool)
+				}
+			}
 			pendingTool.Arguments = event.Arguments
 
 		case "tool_call.success":
+			if name := event.ToolName(); name != "" && pendingTool.Tool == "" {
+				pendingTool.Tool = name
+			}
+			if !toolStartEmitted && pendingTool.Tool != "" {
+				toolStartEmitted = true
+				if cb.OnToolCallStart != nil {
+					cb.OnToolCallStart(pendingTool.Tool)
+				}
+			}
 			pendingTool.Output = event.Output
 			pendingTool.Success = true
 			if cb.OnToolCallResult != nil {
 				cb.OnToolCallResult(pendingTool)
 			}
 			pendingTool = ToolCallEvent{}
+			toolStartEmitted = false
 
 		case "tool_call.failure":
+			if name := event.ToolName(); name != "" && pendingTool.Tool == "" {
+				pendingTool.Tool = name
+			}
+			if !toolStartEmitted && pendingTool.Tool != "" {
+				toolStartEmitted = true
+				if cb.OnToolCallStart != nil {
+					cb.OnToolCallStart(pendingTool.Tool)
+				}
+			}
 			pendingTool.Success = false
 			pendingTool.Reason = event.Reason
 			if cb.OnToolCallResult != nil {
 				cb.OnToolCallResult(pendingTool)
 			}
 			pendingTool = ToolCallEvent{}
+			toolStartEmitted = false
 
 		// ── Error ────────────────────────────────────────────────
 		case "error":

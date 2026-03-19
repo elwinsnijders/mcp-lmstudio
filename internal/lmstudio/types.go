@@ -24,12 +24,32 @@ type StreamEvent struct {
 	Type      string          `json:"type"`
 	Content   string          `json:"content,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
+	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Output    string          `json:"output,omitempty"`
 	Result    *ChatResponse   `json:"result,omitempty"`
 	Progress  float64         `json:"progress,omitempty"`
 	Reason    string          `json:"reason,omitempty"`
 	Error     *StreamError    `json:"error,omitempty"`
+	Metadata  *ToolCallMeta   `json:"metadata,omitempty"`
+}
+
+func (e *StreamEvent) ToolName() string {
+	if e.Tool != "" {
+		return e.Tool
+	}
+	if e.Name != "" {
+		return e.Name
+	}
+	if e.Metadata != nil && e.Metadata.ToolName != "" {
+		return e.Metadata.ToolName
+	}
+	return ""
+}
+
+type ToolCallMeta struct {
+	Type     string `json:"type"`
+	ToolName string `json:"tool_name,omitempty"`
 }
 
 type StreamError struct {

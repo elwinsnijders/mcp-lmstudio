@@ -26,6 +26,10 @@ config.json
 sessions/
 progress/
 chatlogs/
+artifacts/
+
+# Local secrets / env overrides
+.env
 
 # Wails UI build artifacts
 node_modules/

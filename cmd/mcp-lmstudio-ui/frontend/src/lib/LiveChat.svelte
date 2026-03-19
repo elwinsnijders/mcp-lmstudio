@@ -2,6 +2,14 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import { GetActiveSessions, LoadChatLog, StartChatWatch, StopChatWatch } from '../../wailsjs/go/main/App'
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+  import { marked } from 'marked'
+
+  marked.setOptions({ breaks: true, gfm: true })
+
+  function md(text) {
+    if (!text) return ''
+    return marked.parse(text)
+  }
 
   let activeSessions = []
   let selectedSession = ''
@@ -14,6 +22,53 @@
   let autoScroll = true
   let chatContainer
   let refreshInterval
+
+  let _rawStream = ''
+  let _rawReasoning = ''
+  let _streamPos = 0
+  let _reasonPos = 0
+  let _typeTimer = null
+
+  const TYPE_INTERVAL = 16
+  const BASE_CHARS = 2
+  const CATCHUP_DIVISOR = 8
+
+  function startTypewriter() {
+    if (_typeTimer) return
+    _typeTimer = setInterval(typewriterTick, TYPE_INTERVAL)
+  }
+
+  function stopTypewriter() {
+    if (_typeTimer) { clearInterval(_typeTimer); _typeTimer = null }
+  }
+
+  function typewriterTick() {
+    let changed = false
+
+    if (_streamPos < _rawStream.length) {
+      const backlog = _rawStream.length - _streamPos
+      const step = Math.max(BASE_CHARS, Math.ceil(backlog / CATCHUP_DIVISOR))
+      _streamPos = Math.min(_streamPos + step, _rawStream.length)
+      streamBuffer = _rawStream.slice(0, _streamPos)
+      changed = true
+    }
+
+    if (_reasonPos < _rawReasoning.length) {
+      const backlog = _rawReasoning.length - _reasonPos
+      const step = Math.max(BASE_CHARS, Math.ceil(backlog / CATCHUP_DIVISOR))
+      _reasonPos = Math.min(_reasonPos + step, _rawReasoning.length)
+      reasoningBuffer = _rawReasoning.slice(0, _reasonPos)
+      changed = true
+    }
+
+    if (changed && autoScroll) {
+      scrollToBottom()
+    }
+
+    if (_streamPos >= _rawStream.length && _reasonPos >= _rawReasoning.length) {
+      stopTypewriter()
+    }
+  }
 
   $: if (selectedSession) {
     loadSession(selectedSession)
@@ -29,14 +84,19 @@
     EventsOff('chat:event')
     StopChatWatch().catch(() => {})
     if (refreshInterval) clearInterval(refreshInterval)
+    stopTypewriter()
   })
 
   async function refreshSessions() {
     try {
+      const prev = new Set(activeSessions)
       const ids = await GetActiveSessions()
       activeSessions = ids || []
-      if (activeSessions.length > 0 && !selectedSession) {
-        selectedSession = activeSessions[0]
+      if (activeSessions.length > 0) {
+        const newest = activeSessions[0]
+        if (!selectedSession || !prev.has(newest)) {
+          selectedSession = newest
+        }
       }
     } catch (_) {}
   }
@@ -46,7 +106,12 @@
       await StopChatWatch()
     } catch (_) {}
 
+    stopTypewriter()
     messages = []
+    _rawStream = ''
+    _rawReasoning = ''
+    _streamPos = 0
+    _reasonPos = 0
     streamBuffer = ''
     reasoningBuffer = ''
     isReasoning = false
@@ -80,6 +145,10 @@
           msgs.push({ role: 'user', content: ev.content })
           break
         case 'reasoning_start':
+          if (pendingAI) {
+            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
+            pendingAI = ''
+          }
           pendingReasoning = ''
           break
         case 'reasoning_delta':
@@ -103,9 +172,17 @@
           pendingAI = ''
           break
         case 'tool_use':
+          if (pendingAI) {
+            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
+            pendingAI = ''
+          }
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
           break
         case 'tool_call_start':
+          if (pendingAI) {
+            msgs.push({ role: 'assistant', content: pendingAI, stats: null })
+            pendingAI = ''
+          }
           msgs.push({ role: 'tool_start', tool: ev.tool })
           break
         case 'tool_call_result':
@@ -124,10 +201,14 @@
     }
 
     if (pendingReasoning) {
+      _rawReasoning = pendingReasoning
+      _reasonPos = pendingReasoning.length
       reasoningBuffer = pendingReasoning
       isReasoning = true
     }
     if (pendingAI) {
+      _rawStream = pendingAI
+      _streamPos = pendingAI.length
       streamBuffer = pendingAI
     }
 
@@ -148,37 +229,52 @@
         break
 
       case 'reasoning_start':
+        flushStream()
+        _rawReasoning = ''
+        _reasonPos = 0
         reasoningBuffer = ''
         isReasoning = true
         break
       case 'reasoning_delta':
-        reasoningBuffer += event.content || ''
-        reasoningBuffer = reasoningBuffer
-        break
+        _rawReasoning += event.content || ''
+        startTypewriter()
+        return
       case 'reasoning_end':
-        if (reasoningBuffer) {
-          messages = [...messages, { role: 'reasoning', content: reasoningBuffer }]
+        stopTypewriter()
+        if (_rawReasoning) {
+          messages = [...messages, { role: 'reasoning', content: _rawReasoning }]
         }
+        _rawReasoning = ''
+        _reasonPos = 0
         reasoningBuffer = ''
         isReasoning = false
         break
 
       case 'ai_delta':
         statusPhase = ''
-        streamBuffer += event.content
-        streamBuffer = streamBuffer
-        break
-
+        _rawStream += event.content
+        startTypewriter()
+        return
       case 'ai_complete':
+        stopTypewriter()
         isReasoning = false
+        _rawReasoning = ''
+        _reasonPos = 0
         reasoningBuffer = ''
         statusPhase = ''
-        messages = [...messages, { role: 'assistant', content: event.content || streamBuffer, stats: event.stats }]
+        messages = [...messages, { role: 'assistant', content: event.content || _rawStream, stats: event.stats }]
+        _rawStream = ''
+        _streamPos = 0
         streamBuffer = ''
         break
 
       case 'error':
+        stopTypewriter()
         messages = [...messages, { role: 'error', content: event.content }]
+        _rawStream = ''
+        _rawReasoning = ''
+        _streamPos = 0
+        _reasonPos = 0
         streamBuffer = ''
         isReasoning = false
         reasoningBuffer = ''
@@ -186,13 +282,19 @@
         break
 
       case 'tool_use':
+        flushStream()
         messages = [...messages, { role: 'tool', content: event.content, tool: event.tool }]
         break
       case 'tool_call_start':
+        flushStream()
         messages = [...messages, { role: 'tool_start', tool: event.tool }]
         break
-      case 'tool_call_result':
-        messages = [...messages, {
+      case 'tool_call_result': {
+        const filtered = messages.filter((m, i) =>
+          !(m.role === 'tool_start' && i === messages.length - 1) &&
+          !(m.role === 'tool_start' && !m.tool)
+        )
+        messages = [...filtered, {
           role: 'tool_result',
           tool: event.tool,
           arguments: event.arguments,
@@ -201,6 +303,7 @@
           reason: event.reason
         }]
         break
+      }
     }
 
     if (autoScroll) {
@@ -208,16 +311,26 @@
     }
   }
 
+  function flushStream() {
+    if (_rawStream || streamBuffer) {
+      stopTypewriter()
+      messages = [...messages, { role: 'assistant', content: _rawStream || streamBuffer, stats: null }]
+      _rawStream = ''
+      _streamPos = 0
+      streamBuffer = ''
+    }
+  }
+
   function flushBuffers() {
-    if (reasoningBuffer) {
-      messages = [...messages, { role: 'reasoning', content: reasoningBuffer }]
+    stopTypewriter()
+    if (_rawReasoning || reasoningBuffer) {
+      messages = [...messages, { role: 'reasoning', content: _rawReasoning || reasoningBuffer }]
+      _rawReasoning = ''
+      _reasonPos = 0
       reasoningBuffer = ''
       isReasoning = false
     }
-    if (streamBuffer) {
-      messages = [...messages, { role: 'assistant', content: streamBuffer, stats: null }]
-      streamBuffer = ''
-    }
+    flushStream()
   }
 
   async function scrollToBottom() {
@@ -313,31 +426,33 @@
         {#each messages as msg}
           {#if msg.role === 'user'}
             <div class="flex justify-end">
-              <div class="max-w-[80%] px-4 py-3 rounded-2xl rounded-br-md bg-violet-600 text-white text-sm">
-                <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
+              <div class="max-w-[80%]">
+                <div class="text-[10px] font-semibold uppercase tracking-wider text-violet-400 text-right mb-1">User</div>
+                <div class="px-4 py-3 rounded-2xl rounded-br-md bg-violet-600 text-white text-sm">
+                  <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
+                </div>
               </div>
             </div>
 
           {:else if msg.role === 'reasoning'}
             <div class="flex justify-start">
               <div class="max-w-[85%]">
-                <details class="group">
-                  <summary class="cursor-pointer text-xs text-blue-500 hover:text-blue-600 font-medium flex items-center gap-1.5 py-1 select-none">
-                    <svg class="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
-                    Reasoning ({msg.content.length} chars)
-                  </summary>
-                  <div class="mt-1 px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-xs leading-relaxed">
-                    <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
-                  </div>
-                </details>
+                <div class="text-[10px] font-semibold uppercase tracking-wider text-blue-400 flex items-center gap-1.5 mb-1">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                  Reasoning
+                </div>
+                <div class="px-3 py-2 rounded-xl bg-blue-50 border border-blue-100 text-blue-800 text-xs leading-relaxed">
+                  <pre class="whitespace-pre-wrap font-sans">{msg.content}</pre>
+                </div>
               </div>
             </div>
 
           {:else if msg.role === 'assistant'}
             <div class="flex justify-start">
               <div class="max-w-[80%]">
-                <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-gray-100 text-gray-800 text-sm">
-                  <pre class="whitespace-pre-wrap font-sans leading-relaxed">{msg.content}</pre>
+                <div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-500 mb-1">Agent</div>
+                <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-gray-100 text-gray-800 text-sm prose prose-sm prose-gray max-w-none">
+                  {@html md(msg.content)}
                 </div>
                 {#if msg.stats}
                   <div class="mt-1 text-[10px] text-gray-400 px-2">
@@ -365,7 +480,12 @@
             <div class="flex justify-center">
               <div class="px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-100 text-amber-600 text-[11px] font-mono flex items-center gap-1.5">
                 <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
-                Calling: {msg.tool}
+                {#if msg.tool}
+                  Calling: {msg.tool}
+                {:else}
+                  <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                  Preparing tool call...
+                {/if}
               </div>
             </div>
 
@@ -429,10 +549,11 @@
           </div>
         {/if}
 
-        <!-- Live message stream -->
+        <!-- Live message stream (plain text for smooth flow, markdown on complete) -->
         {#if streamBuffer}
           <div class="flex justify-start">
             <div class="max-w-[80%]">
+              <div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-500 mb-1">Agent</div>
               <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-gray-100 text-gray-800 text-sm">
                 <pre class="whitespace-pre-wrap font-sans leading-relaxed">{streamBuffer}</pre>
                 <span class="inline-block w-2 h-4 bg-violet-500 animate-pulse ml-0.5 align-text-bottom"></span>
