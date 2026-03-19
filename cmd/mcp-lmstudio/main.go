@@ -230,10 +230,21 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, fmt.Sprintf("%v", args.Task))
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, func(delta string) {
-			if chatWriter != nil {
-				chatWriter.WriteDelta(sess.ID, delta)
-			}
+		chatResp, err := lm.ChatStream(ctx, chatReq, lmstudio.StreamCallbacks{
+			OnDelta: func(delta string) {
+				if chatWriter != nil {
+					chatWriter.WriteDelta(sess.ID, delta)
+				}
+			},
+			OnToolCall: func(tc lmstudio.ToolCallEvent) {
+				if chatWriter != nil {
+					status := "success"
+					if !tc.Success {
+						status = "failed: " + tc.Reason
+					}
+					chatWriter.WriteToolUse(sess.ID, tc.Tool, status)
+				}
+			},
 		})
 		if err != nil {
 			if chatWriter != nil {
@@ -301,10 +312,21 @@ func main() {
 			chatWriter.WriteUserMessage(sess.ID, args.Message)
 		}
 
-		chatResp, err := lm.ChatStream(ctx, chatReq, func(delta string) {
-			if chatWriter != nil {
-				chatWriter.WriteDelta(sess.ID, delta)
-			}
+		chatResp, err := lm.ChatStream(ctx, chatReq, lmstudio.StreamCallbacks{
+			OnDelta: func(delta string) {
+				if chatWriter != nil {
+					chatWriter.WriteDelta(sess.ID, delta)
+				}
+			},
+			OnToolCall: func(tc lmstudio.ToolCallEvent) {
+				if chatWriter != nil {
+					status := "success"
+					if !tc.Success {
+						status = "failed: " + tc.Reason
+					}
+					chatWriter.WriteToolUse(sess.ID, tc.Tool, status)
+				}
+			},
 		})
 		if err != nil {
 			if chatWriter != nil {

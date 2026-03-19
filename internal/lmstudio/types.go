@@ -21,11 +21,20 @@ type ChatRequest struct {
 }
 
 type StreamEvent struct {
-	Type       string          `json:"type"`
-	Delta      string          `json:"delta,omitempty"`
-	ResponseID string          `json:"response_id,omitempty"`
-	Response   *ChatResponse   `json:"response,omitempty"`
-	RawData    json.RawMessage `json:"-"`
+	Type      string          `json:"type"`
+	Content   string          `json:"content,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Output    string          `json:"output,omitempty"`
+	Result    *ChatResponse   `json:"result,omitempty"`
+}
+
+type ToolCallEvent struct {
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Output    string          `json:"output,omitempty"`
+	Success   bool            `json:"success"`
+	Reason    string          `json:"reason,omitempty"`
 }
 
 type ChatResponse struct {

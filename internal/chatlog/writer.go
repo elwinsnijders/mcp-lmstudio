@@ -75,6 +75,15 @@ func (w *Writer) WriteComplete(sessionID, content string, stats *ChatStats) erro
 	})
 }
 
+func (w *Writer) WriteToolUse(sessionID, tool, content string) error {
+	return w.Write(ChatEvent{
+		Type:      EventToolUse,
+		SessionID: sessionID,
+		Tool:      tool,
+		Content:   content,
+	})
+}
+
 func (w *Writer) WriteError(sessionID, content string) error {
 	return w.Write(ChatEvent{
 		Type:      EventError,

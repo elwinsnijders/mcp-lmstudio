@@ -63,9 +63,15 @@ func (c *Client) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, err
 	return &chatResp, nil
 }
 
-// ChatStream sends a streaming chat request. It calls onDelta for each text
-// chunk as it arrives via SSE. Returns the full accumulated ChatResponse.
-func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, onDelta func(text string)) (*ChatResponse, error) {
+type StreamCallbacks struct {
+	OnDelta    func(text string)
+	OnToolCall func(event ToolCallEvent)
+}
+
+// ChatStream sends a streaming chat request via LM Studio's v1 SSE API.
+// Calls OnDelta for message text chunks and OnToolCall for tool events.
+// Returns the full ChatResponse from the chat.end event.
+func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCallbacks) (*ChatResponse, error) {
 	req.Stream = true
 
 	body, err := json.Marshal(req)
@@ -92,13 +98,14 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, onDelta func(
 
 	var accumulated strings.Builder
 	var finalResponse *ChatResponse
+	var pendingTool ToolCallEvent
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" || line == ": ping" {
+		if line == "" || strings.HasPrefix(line, ": ") || strings.HasPrefix(line, "event: ") {
 			continue
 		}
 		if !strings.HasPrefix(line, "data: ") {
@@ -115,16 +122,39 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, onDelta func(
 		}
 
 		switch event.Type {
-		case "response.output_text.delta":
-			if event.Delta != "" {
-				accumulated.WriteString(event.Delta)
-				if onDelta != nil {
-					onDelta(event.Delta)
+		case "message.delta":
+			if event.Content != "" {
+				accumulated.WriteString(event.Content)
+				if cb.OnDelta != nil {
+					cb.OnDelta(event.Content)
 				}
 			}
-		case "response.completed":
-			if event.Response != nil {
-				finalResponse = event.Response
+
+		case "tool_call.start":
+			pendingTool = ToolCallEvent{Tool: event.Tool}
+
+		case "tool_call.arguments":
+			pendingTool.Arguments = event.Arguments
+
+		case "tool_call.success":
+			pendingTool.Output = event.Output
+			pendingTool.Success = true
+			if cb.OnToolCall != nil {
+				cb.OnToolCall(pendingTool)
+			}
+			pendingTool = ToolCallEvent{}
+
+		case "tool_call.failure":
+			pendingTool.Success = false
+			pendingTool.Reason = event.Content
+			if cb.OnToolCall != nil {
+				cb.OnToolCall(pendingTool)
+			}
+			pendingTool = ToolCallEvent{}
+
+		case "chat.end":
+			if event.Result != nil {
+				finalResponse = event.Result
 			}
 		}
 	}
