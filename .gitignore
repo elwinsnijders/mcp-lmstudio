@@ -25,6 +25,12 @@ config.json
 # Session and progress data
 sessions/
 progress/
+chatlogs/
+
+# Wails UI build artifacts
+node_modules/
+cmd/mcp-lmstudio-ui/build/
+cmd/mcp-lmstudio-ui/frontend/dist/
 
 # Logs
 lmstudio_audit.log

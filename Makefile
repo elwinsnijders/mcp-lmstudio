@@ -1,4 +1,4 @@
-.PHONY: run build test clean install
+.PHONY: run build test clean install ui ui-dev
 
 run:
 	go run cmd/mcp-lmstudio/main.go
@@ -13,7 +13,13 @@ install:
 test: build
 	go run cmd/test-client/main.go
 
+ui:
+	cd cmd/mcp-lmstudio-ui && wails build
+
+ui-dev:
+	cd cmd/mcp-lmstudio-ui && wails dev
+
 clean:
 	rm -f mcp-lmstudio
 	rm -f /tmp/lmstudio_audit.log
-	rm -rf sessions/ progress/
+	rm -rf sessions/ progress/ chatlogs/

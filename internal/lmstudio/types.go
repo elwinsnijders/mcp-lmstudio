@@ -17,6 +17,15 @@ type ChatRequest struct {
 	Integrations       interface{} `json:"integrations,omitempty"`
 	PreviousResponseID string      `json:"previous_response_id,omitempty"`
 	Store              *bool       `json:"store,omitempty"`
+	Stream             bool        `json:"stream,omitempty"`
+}
+
+type StreamEvent struct {
+	Type       string          `json:"type"`
+	Delta      string          `json:"delta,omitempty"`
+	ResponseID string          `json:"response_id,omitempty"`
+	Response   *ChatResponse   `json:"response,omitempty"`
+	RawData    json.RawMessage `json:"-"`
 }
 
 type ChatResponse struct {

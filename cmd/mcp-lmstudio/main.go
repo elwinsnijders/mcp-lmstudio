@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/infinitimeless/lmstudio-mcp/internal/chatlog"
 	"github.com/infinitimeless/lmstudio-mcp/internal/config"
 	"github.com/infinitimeless/lmstudio-mcp/internal/lmstudio"
 	"github.com/infinitimeless/lmstudio-mcp/internal/profile"
@@ -80,6 +81,11 @@ func main() {
 	sessions := session.NewManager(store, cfg.MaxSessionTokens, cfg.TokenWarningThreshold, cfg.TokenCriticalThreshold)
 	prog := progress.NewManager(cfg.ProgressDir)
 	profiles := profile.NewManager(cfg)
+
+	chatWriter, err := chatlog.NewWriter(cfg.ChatlogDir)
+	if err != nil {
+		logger.Printf("Warning: chatlog disabled: %v", err)
+	}
 
 	resolveSessionIntegrations := func(sess *session.Session) []interface{} {
 		if len(sess.IntegrationKeys) == 0 {
@@ -220,9 +226,30 @@ func main() {
 			chatReq.Integrations = integrations
 		}
 
-		chatResp, err := lm.Chat(ctx, chatReq)
+		if chatWriter != nil {
+			chatWriter.WriteUserMessage(sess.ID, fmt.Sprintf("%v", args.Task))
+		}
+
+		chatResp, err := lm.ChatStream(ctx, chatReq, func(delta string) {
+			if chatWriter != nil {
+				chatWriter.WriteDelta(sess.ID, delta)
+			}
+		})
 		if err != nil {
+			if chatWriter != nil {
+				chatWriter.WriteError(sess.ID, err.Error())
+			}
 			return errResult(fmt.Sprintf("Session %s created but LM Studio error: %v", sess.ID, err)), nil, nil
+		}
+
+		fullText := formatOutput(chatResp.Output)
+		if chatWriter != nil {
+			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
+				InputTokens:  chatResp.Stats.InputTokens,
+				OutputTokens: chatResp.Stats.TotalOutputTokens,
+				TokensPerSec: chatResp.Stats.TokensPerSecond,
+				ResponseID:   chatResp.ResponseID,
+			})
 		}
 
 		_, usage, err := sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
@@ -232,7 +259,7 @@ func main() {
 
 		var b strings.Builder
 		fmt.Fprintf(&b, "Session: %s | Profile: %s | Model: %s\n\n", sess.ID, args.Profile, chatResp.ModelInstanceID)
-		b.WriteString(formatOutput(chatResp.Output))
+		b.WriteString(fullText)
 		if usage != nil {
 			b.WriteString("\n\n")
 			b.WriteString(sessions.FormatTokenUsage(usage))
@@ -270,9 +297,30 @@ func main() {
 			chatReq.PreviousResponseID = sess.LatestResponseID
 		}
 
-		chatResp, err := lm.Chat(ctx, chatReq)
+		if chatWriter != nil {
+			chatWriter.WriteUserMessage(sess.ID, args.Message)
+		}
+
+		chatResp, err := lm.ChatStream(ctx, chatReq, func(delta string) {
+			if chatWriter != nil {
+				chatWriter.WriteDelta(sess.ID, delta)
+			}
+		})
 		if err != nil {
+			if chatWriter != nil {
+				chatWriter.WriteError(sess.ID, err.Error())
+			}
 			return errResult(fmt.Sprintf("LM Studio error: %v", err)), nil, nil
+		}
+
+		fullText := formatOutput(chatResp.Output)
+		if chatWriter != nil {
+			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
+				InputTokens:  chatResp.Stats.InputTokens,
+				OutputTokens: chatResp.Stats.TotalOutputTokens,
+				TokensPerSec: chatResp.Stats.TokensPerSecond,
+				ResponseID:   chatResp.ResponseID,
+			})
 		}
 
 		_, usage, err := sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
@@ -281,7 +329,7 @@ func main() {
 		}
 
 		var b strings.Builder
-		b.WriteString(formatOutput(chatResp.Output))
+		b.WriteString(fullText)
 		if usage != nil {
 			b.WriteString("\n\n")
 			b.WriteString(sessions.FormatTokenUsage(usage))
