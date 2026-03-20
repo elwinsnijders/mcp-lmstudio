@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/infinitimeless/lmstudio-mcp/internal/chatlog"
@@ -94,6 +95,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.dataDir = findDataDir()
+	a.loadDotEnv()
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -324,7 +326,30 @@ LOG_FILE=%s
 		dto.SessionsDir, dto.ProgressDir, dto.ChatlogDir,
 		dto.ConfigFile, dto.LogFile,
 	)
-	return os.WriteFile(envPath, []byte(content), 0644)
+	if err := os.WriteFile(envPath, []byte(content), 0644); err != nil {
+		return err
+	}
+	a.loadDotEnv()
+	return nil
+}
+
+// loadDotEnv reads the .env file beside config.json and sets each KEY=VALUE
+// into the process environment so LoadSettings picks them up.
+func (a *App) loadDotEnv() {
+	envPath := filepath.Join(a.dataDir, ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.IndexByte(line, '='); idx > 0 {
+			os.Setenv(line[:idx], line[idx+1:])
+		}
+	}
 }
 
 func envOrDefault(key, def string) string {

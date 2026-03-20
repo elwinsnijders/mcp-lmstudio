@@ -14,10 +14,11 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	authToken  string
-	httpClient *http.Client
-	logger     *log.Logger
+	baseURL      string
+	authToken    string
+	httpClient   *http.Client
+	streamClient *http.Client
+	logger       *log.Logger
 }
 
 func NewClient(baseURL, authToken string, timeoutMinutes int, logger *log.Logger) *Client {
@@ -30,7 +31,8 @@ func NewClient(baseURL, authToken string, timeoutMinutes int, logger *log.Logger
 		httpClient: &http.Client{
 			Timeout: time.Duration(timeoutMinutes) * time.Minute,
 		},
-		logger: logger,
+		streamClient: &http.Client{},
+		logger:       logger,
 	}
 }
 
@@ -95,7 +97,7 @@ func (c *Client) ChatStream(ctx context.Context, req *ChatRequest, cb StreamCall
 	}
 	c.setHeaders(httpReq)
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to LM Studio: %w", err)
 	}
