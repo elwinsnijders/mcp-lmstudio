@@ -159,27 +159,5 @@ func ReadFile(path string) ([]ChatEvent, error) {
 		}
 		return nil, fmt.Errorf("reading chatlog: %w", err)
 	}
-
-	var events []ChatEvent
-	start := 0
-	for i := range data {
-		if data[i] == '\n' {
-			line := data[start:i]
-			start = i + 1
-			if len(line) == 0 {
-				continue
-			}
-			var ev ChatEvent
-			if json.Unmarshal(line, &ev) == nil {
-				events = append(events, ev)
-			}
-		}
-	}
-	if start < len(data) {
-		var ev ChatEvent
-		if json.Unmarshal(data[start:], &ev) == nil {
-			events = append(events, ev)
-		}
-	}
-	return events, nil
+	return parseJSONLBytes(data), nil
 }

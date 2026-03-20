@@ -33,6 +33,18 @@
   const BASE_CHARS = 2
   const CATCHUP_DIVISOR = 8
 
+  /** Safety cap for tool args/output in UI (full data is in artifacts / tail chatlog). */
+  const TOOL_PREVIEW = 8192
+  /** Cap very large assistant bubbles from old logs before markdown. */
+  const ASSISTANT_PREVIEW = 128000
+
+  function capPreview(s, max = TOOL_PREVIEW) {
+    if (!s || s.length <= max) return s
+    return s.slice(0, max) + '\n... (truncated)'
+  }
+
+  let loadDebounceTimer = null
+
   function startTypewriter() {
     if (_typeTimer) return
     _typeTimer = setInterval(typewriterTick, TYPE_INTERVAL)
@@ -71,7 +83,11 @@
   }
 
   $: if (selectedSession) {
-    loadSession(selectedSession)
+    const sid = selectedSession
+    clearTimeout(loadDebounceTimer)
+    loadDebounceTimer = setTimeout(() => {
+      loadSession(sid)
+    }, 75)
   }
 
   onMount(async () => {
@@ -84,6 +100,7 @@
     EventsOff('chat:event')
     StopChatWatch().catch(() => {})
     if (refreshInterval) clearInterval(refreshInterval)
+    if (loadDebounceTimer) clearTimeout(loadDebounceTimer)
     stopTypewriter()
   })
 
@@ -102,6 +119,7 @@
   }
 
   async function loadSession(sessionId) {
+    const loadId = sessionId
     try {
       await StopChatWatch()
     } catch (_) {}
@@ -120,11 +138,13 @@
 
     try {
       const events = await LoadChatLog(sessionId)
+      if (loadId !== selectedSession) return
       if (events) {
         processHistoricEvents(events)
       }
     } catch (_) {}
 
+    if (loadId !== selectedSession) return
     StartChatWatch(sessionId)
     await scrollToBottom()
   }
@@ -163,10 +183,15 @@
         case 'ai_delta':
           pendingAI += ev.content
           break
-        case 'ai_complete':
-          msgs.push({ role: 'assistant', content: ev.content || pendingAI, stats: ev.stats })
+        case 'ai_complete': {
+          let c = ev.content || pendingAI
+          if (c && c.length > ASSISTANT_PREVIEW) {
+            c = c.slice(0, ASSISTANT_PREVIEW) + '\n... (truncated)'
+          }
+          msgs.push({ role: 'assistant', content: c, stats: ev.stats })
           pendingAI = ''
           break
+        }
         case 'error':
           msgs.push({ role: 'error', content: ev.content })
           pendingAI = ''
@@ -189,8 +214,8 @@
           msgs.push({
             role: 'tool_result',
             tool: ev.tool,
-            arguments: ev.arguments,
-            output: ev.output,
+            arguments: capPreview(ev.arguments, TOOL_PREVIEW),
+            output: capPreview(ev.output, TOOL_PREVIEW),
             success: ev.success,
             reason: ev.reason
           })
@@ -297,8 +322,8 @@
         messages = [...filtered, {
           role: 'tool_result',
           tool: event.tool,
-          arguments: event.arguments,
-          output: event.output,
+          arguments: capPreview(event.arguments, TOOL_PREVIEW),
+          output: capPreview(event.output, TOOL_PREVIEW),
           success: event.success,
           reason: event.reason
         }]

@@ -227,7 +227,8 @@ func (a *App) GetActiveSessions() ([]string, error) {
 
 func (a *App) LoadChatLog(sessionID string) ([]chatlog.ChatEvent, error) {
 	chatlogDir := filepath.Join(a.dataDir, "chatlogs")
-	return chatlog.ReadAll(chatlogDir, sessionID)
+	// Tail read keeps Wails main thread responsive on large logs (Live View / archive).
+	return chatlog.ReadRecent(chatlogDir, sessionID, chatlog.DefaultRecentMaxBytes, chatlog.DefaultRecentMaxEvents)
 }
 
 func (a *App) StartChatWatch(sessionID string) {
