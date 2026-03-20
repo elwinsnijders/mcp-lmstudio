@@ -688,7 +688,11 @@ func buildStreamCallbacks(cw *chatlog.Writer, as *artifacts.Store, logger *log.L
 				if tc.Arguments != nil {
 					args = string(tc.Arguments)
 				}
-				cw.WriteToolCallResult(sessionID, tc.Tool, args, tc.Output, tc.Reason, tc.Success)
+				output := tc.Output
+				if len(output) > 4096 {
+					output = output[:4096] + "\n... (truncated, full content in artifacts)"
+				}
+				cw.WriteToolCallResult(sessionID, tc.Tool, args, output, tc.Reason, tc.Success)
 			}
 			if as != nil && tc.Success && tc.Output != "" {
 				if err := as.Store(sessionID, tc.Tool, tc.Arguments, tc.Output, nil); err != nil {

@@ -142,14 +142,19 @@ func (w *ChatWatcher) readNewLines() {
 	}
 
 	f.Seek(currentOffset, io.SeekStart)
+	const maxBuf = 2 * 1024 * 1024
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	scanner.Buffer(make([]byte, maxBuf), maxBuf)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var event chatlog.ChatEvent
 		if json.Unmarshal(line, &event) == nil && event.Type != "" {
 			wailsRuntime.EventsEmit(ctx, "chat:event", event)
 		}
+	}
+	if scanner.Err() != nil {
+		// Oversized line: skip to end of file so we don't get stuck
+		f.Seek(0, io.SeekEnd)
 	}
 	newOffset, _ := f.Seek(0, io.SeekCurrent)
 	w.mu.Lock()
