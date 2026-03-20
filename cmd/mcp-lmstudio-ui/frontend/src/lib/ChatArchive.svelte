@@ -10,6 +10,10 @@
     return marked.parse(text)
   }
 
+  function mkAssistant(content, stats, ts) {
+    return { role: 'assistant', content, html: md(content), stats, ts }
+  }
+
   export let sessionId = null
 
   let sessions = []
@@ -59,7 +63,7 @@
       switch (ev.type) {
         case 'user_message':
           if (pendingDelta.trim()) {
-            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
+            msgs.push(mkAssistant(pendingDelta.trim(), null, ev.ts))
           }
           pendingDelta = ''
           pendingReasoning = ''
@@ -67,7 +71,7 @@
           break
         case 'reasoning_start':
           if (pendingDelta.trim()) {
-            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
+            msgs.push(mkAssistant(pendingDelta.trim(), null, ev.ts))
           }
           pendingDelta = ''
           pendingReasoning = ''
@@ -85,7 +89,7 @@
           pendingDelta += ev.content
           break
         case 'ai_complete':
-          msgs.push({ role: 'assistant', content: ev.content || pendingDelta, stats: ev.stats, ts: ev.ts })
+          msgs.push(mkAssistant(ev.content || pendingDelta, ev.stats, ev.ts))
           pendingDelta = ''
           break
         case 'error':
@@ -94,14 +98,14 @@
           break
         case 'tool_use':
           if (pendingDelta.trim()) {
-            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
+            msgs.push(mkAssistant(pendingDelta.trim(), null, ev.ts))
           }
           pendingDelta = ''
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool, ts: ev.ts })
           break
         case 'tool_call_start':
           if (pendingDelta.trim()) {
-            msgs.push({ role: 'assistant', content: pendingDelta.trim(), stats: null, ts: ev.ts })
+            msgs.push(mkAssistant(pendingDelta.trim(), null, ev.ts))
           }
           pendingDelta = ''
           break
@@ -125,7 +129,7 @@
       msgs.push({ role: 'reasoning', content: pendingReasoning, ts: '' })
     }
     if (pendingDelta) {
-      msgs.push({ role: 'assistant', content: pendingDelta, stats: null, ts: '' })
+      msgs.push(mkAssistant(pendingDelta, null, ''))
     }
 
     return msgs
@@ -158,12 +162,17 @@
   }
 
   const PREVIEW_LINES = 5
+  const PREVIEW_CHARS = 500
 
   function previewLines(s) {
     if (!s) return { preview: '', full: '', needsExpand: false }
     const lines = s.split('\n')
-    if (lines.length <= PREVIEW_LINES) return { preview: s, full: s, needsExpand: false }
-    return { preview: lines.slice(0, PREVIEW_LINES).join('\n'), full: s, needsExpand: true }
+    if (lines.length <= PREVIEW_LINES && s.length <= PREVIEW_CHARS) {
+      return { preview: s, full: s, needsExpand: false }
+    }
+    const lineCut = lines.slice(0, PREVIEW_LINES).join('\n')
+    const preview = lineCut.length > PREVIEW_CHARS ? lineCut.slice(0, PREVIEW_CHARS) + '...' : lineCut
+    return { preview, full: s, needsExpand: true }
   }
 
   let expandedTools = {}
@@ -264,7 +273,7 @@
 
             {:else if msg.role === 'assistant'}
               <div class="pl-3 border-l-2 border-emerald-200 prose prose-sm prose-gray max-w-none">
-                {@html md(msg.content)}
+                {@html msg.html || md(msg.content)}
               </div>
               {#if expanded[i] && msg.stats}
                 <div class="mt-2 ml-3 px-3 py-2 bg-slate-50 rounded text-[11px] text-slate-500 font-mono">

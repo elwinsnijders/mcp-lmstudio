@@ -11,6 +11,10 @@
     return marked.parse(text)
   }
 
+  function mkAssistant(content, stats) {
+    return { role: 'assistant', content, html: md(content), stats }
+  }
+
   let activeSessions = []
   let selectedSession = ''
   let messages = []
@@ -158,7 +162,7 @@
       switch (ev.type) {
         case 'user_message':
           if (pendingAI.trim()) {
-            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
+            msgs.push(mkAssistant(pendingAI.trim(), null))
           }
           pendingAI = ''
           pendingReasoning = ''
@@ -166,7 +170,7 @@
           break
         case 'reasoning_start':
           if (pendingAI.trim()) {
-            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
+            msgs.push(mkAssistant(pendingAI.trim(), null))
           }
           pendingAI = ''
           pendingReasoning = ''
@@ -188,7 +192,7 @@
           if (c && c.length > ASSISTANT_PREVIEW) {
             c = c.slice(0, ASSISTANT_PREVIEW) + '\n... (truncated)'
           }
-          msgs.push({ role: 'assistant', content: c, stats: ev.stats })
+          msgs.push(mkAssistant(c, ev.stats))
           pendingAI = ''
           break
         }
@@ -198,14 +202,14 @@
           break
         case 'tool_use':
           if (pendingAI.trim()) {
-            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
+            msgs.push(mkAssistant(pendingAI.trim(), null))
           }
           pendingAI = ''
           msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
           break
         case 'tool_call_start':
           if (pendingAI.trim()) {
-            msgs.push({ role: 'assistant', content: pendingAI.trim(), stats: null })
+            msgs.push(mkAssistant(pendingAI.trim(), null))
           }
           pendingAI = ''
           msgs.push({ role: 'tool_start', tool: ev.tool })
@@ -287,7 +291,7 @@
         _reasonPos = 0
         reasoningBuffer = ''
         statusPhase = ''
-        messages = [...messages, { role: 'assistant', content: event.content || _rawStream, stats: event.stats }]
+        messages = [...messages, mkAssistant(event.content || _rawStream, event.stats)]
         _rawStream = ''
         _streamPos = 0
         streamBuffer = ''
@@ -340,7 +344,7 @@
     const text = (_rawStream || streamBuffer || '').trim()
     stopTypewriter()
     if (text) {
-      messages = [...messages, { role: 'assistant', content: text, stats: null }]
+      messages = [...messages, mkAssistant(text, null)]
     }
     _rawStream = ''
     _streamPos = 0
@@ -383,12 +387,17 @@
   }
 
   const PREVIEW_LINES = 5
+  const PREVIEW_CHARS = 500
 
   function previewLines(s) {
     if (!s) return { preview: '', full: '', needsExpand: false }
     const lines = s.split('\n')
-    if (lines.length <= PREVIEW_LINES) return { preview: s, full: s, needsExpand: false }
-    return { preview: lines.slice(0, PREVIEW_LINES).join('\n'), full: s, needsExpand: true }
+    if (lines.length <= PREVIEW_LINES && s.length <= PREVIEW_CHARS) {
+      return { preview: s, full: s, needsExpand: false }
+    }
+    const lineCut = lines.slice(0, PREVIEW_LINES).join('\n')
+    const preview = lineCut.length > PREVIEW_CHARS ? lineCut.slice(0, PREVIEW_CHARS) + '...' : lineCut
+    return { preview, full: s, needsExpand: true }
   }
 
   let expandedTools = {}
@@ -455,7 +464,7 @@
           </div>
         </div>
       {:else}
-        {#each messages as msg}
+        {#each messages as msg, i}
           {#if msg.role === 'user'}
             <div class="flex justify-end">
               <div class="max-w-[80%]">
@@ -484,7 +493,7 @@
               <div class="max-w-[80%]">
                 <div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-500 mb-1">Agent</div>
                 <div class="px-4 py-3 rounded-2xl rounded-bl-md bg-gray-100 text-gray-800 text-sm prose prose-sm prose-gray max-w-none">
-                  {@html md(msg.content)}
+                  {@html msg.html || md(msg.content)}
                 </div>
                 {#if msg.stats}
                   <div class="mt-1 text-[10px] text-gray-400 px-2">
