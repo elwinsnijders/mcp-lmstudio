@@ -31,6 +31,7 @@ type SessionDTO struct {
 	TokensPercent    float64  `json:"tokensPercent"`
 	Exchanges        int      `json:"exchanges"`
 	IntegrationKeys  []string `json:"integrationKeys"`
+	Project          string   `json:"project,omitempty"`
 	GroupID          string   `json:"groupId,omitempty"`
 	GroupStep        int      `json:"groupStep,omitempty"`
 	CreatedAt        string   `json:"createdAt"`
@@ -172,6 +173,7 @@ type rawSession struct {
 	TokensMax        int       `json:"tokens_max"`
 	ResponseIDs      []string  `json:"response_ids"`
 	IntegrationKeys  []string  `json:"integration_keys,omitempty"`
+	Project          string    `json:"project,omitempty"`
 	GroupID          string    `json:"group_id,omitempty"`
 	GroupStep        int       `json:"group_step,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -218,6 +220,7 @@ func (a *App) ListSessions() ([]SessionDTO, error) {
 			TokensPercent:   pct,
 			Exchanges:       len(s.ResponseIDs),
 			IntegrationKeys: s.IntegrationKeys,
+			Project:         s.Project,
 			GroupID:         s.GroupID,
 			GroupStep:       s.GroupStep,
 			CreatedAt:       s.CreatedAt.Format(time.RFC3339),

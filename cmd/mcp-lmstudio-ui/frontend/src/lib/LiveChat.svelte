@@ -16,6 +16,7 @@
   }
 
   let activeSessions = []
+  let activeSessionMap = {}
   let selectedSession = ''
   let messages = []
   let streamBuffer = ''
@@ -115,8 +116,13 @@
   async function refreshSessions() {
     try {
       const prev = new Set(activeSessions)
-      const ids = await GetActiveSessions()
+      const [ids, allSessions] = await Promise.all([GetActiveSessions(), ListSessions()])
       activeSessions = ids || []
+      const map = {}
+      for (const s of (allSessions || [])) {
+        if (s.status === 'active') map[s.id] = s
+      }
+      activeSessionMap = map
       if (activeSessions.length > 0) {
         const newest = activeSessions[0]
         if (!selectedSession || !prev.has(newest)) {
@@ -501,7 +507,7 @@
           class="px-3 py-1.5 text-xs font-mono border border-gray-300 rounded-md focus:ring-2 focus:ring-violet-500 focus:border-violet-500 outline-none"
         >
           {#each activeSessions as id}
-            <option value={id}>{id}</option>
+            <option value={id}>{id}{activeSessionMap[id]?.project ? ' | ' + activeSessionMap[id].project : ''}</option>
           {/each}
         </select>
       {/if}

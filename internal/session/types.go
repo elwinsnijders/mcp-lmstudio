@@ -20,6 +20,7 @@ type Session struct {
 	ResponseIDs      []string  `json:"response_ids"`
 	LatestResponseID string    `json:"latest_response_id"`
 	IntegrationKeys  []string  `json:"integration_keys,omitempty"`
+	Project          string    `json:"project,omitempty"`
 	GroupID          string    `json:"group_id,omitempty"`
 	GroupStep        int       `json:"group_step,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`

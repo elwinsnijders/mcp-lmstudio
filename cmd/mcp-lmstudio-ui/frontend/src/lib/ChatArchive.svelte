@@ -227,7 +227,7 @@
       >
         <option value="">Select a session...</option>
         {#each sessions as s}
-          <option value={s.id}>{s.id} [{s.status}] {s.profile || ''}</option>
+          <option value={s.id}>{s.id} [{s.status}] {s.profile || ''}{s.project ? ' | ' + s.project : ''}</option>
         {/each}
       </select>
     </div>

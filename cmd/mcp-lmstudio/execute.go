@@ -44,7 +44,7 @@ func (tc *taskContext) executeNewTask(ctx context.Context, args StartTaskArgs) t
 	ctxLen := tc.profiles.ResolveContextLength(args.Profile, args.ContextLength)
 	model := tc.profiles.ResolveModel(args.Profile)
 
-	sess, err := tc.sessions.Create(args.Task, args.Profile, model, args.MaxTokens, args.Integrations)
+	sess, err := tc.sessions.Create(args.Task, args.Profile, model, args.MaxTokens, args.Integrations, args.Project)
 	if err != nil {
 		return taskResult{Error: fmt.Sprintf("Session creation error: %v", err)}
 	}

@@ -35,6 +35,7 @@ type StartTaskArgs struct {
 	ContextLength int      `json:"context_length,omitempty" jsonschema:"Context window size in tokens"`
 	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable (e.g. filesystem or playwright)"`
 	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt (shared prompt still applies)"`
+	Project       string   `json:"project,omitempty" jsonschema:"Project name to tag this session with for grouping related tasks"`
 }
 
 type ContinueTaskArgs struct {
@@ -83,10 +84,12 @@ type QueueItem struct {
 	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
 	SessionID     string   `json:"session_id,omitempty" jsonschema:"Session ID to continue (makes this a continue_task instead of start_task)"`
 	Message       string   `json:"message,omitempty" jsonschema:"Message for continue_task (used when session_id is set)"`
+	Project       string   `json:"project,omitempty" jsonschema:"Project name override for this item (defaults to queue-level project)"`
 }
 
 type QueueTasksArgs struct {
-	Tasks []QueueItem `json:"tasks" jsonschema:"Ordered list of tasks to execute sequentially"`
+	Tasks   []QueueItem `json:"tasks" jsonschema:"Ordered list of tasks to execute sequentially"`
+	Project string      `json:"project,omitempty" jsonschema:"Project name applied to all tasks in this queue"`
 }
 
 type ChainItem struct {
@@ -100,11 +103,13 @@ type ChainItem struct {
 	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
 	SessionID     string   `json:"session_id,omitempty" jsonschema:"Session ID to continue (makes this a continue_task)"`
 	Message       string   `json:"message,omitempty" jsonschema:"Message for continue_task (used when session_id is set)"`
+	Project       string   `json:"project,omitempty" jsonschema:"Project name override for this item (defaults to chain-level project)"`
 }
 
 type ChainTasksArgs struct {
 	Tasks     []ChainItem `json:"tasks" jsonschema:"Ordered list of tasks forming the pipeline"`
 	ChainMode string      `json:"chain_mode,omitempty" jsonschema:"How results flow forward: 'previous' (default, only last result) or 'all' (all accumulated results)"`
+	Project   string      `json:"project,omitempty" jsonschema:"Project name applied to all tasks in this chain"`
 }
 
 type LoopTaskArgs struct {
@@ -117,6 +122,7 @@ type LoopTaskArgs struct {
 	ContextLength int      `json:"context_length,omitempty" jsonschema:"Context window size in tokens"`
 	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable"`
 	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
+	Project       string   `json:"project,omitempty" jsonschema:"Project name applied to all iterations"`
 }
 
 func main() {
@@ -362,6 +368,11 @@ func main() {
 				tc.groups.Update(grp)
 			}
 
+			itemProject := item.Project
+			if itemProject == "" {
+				itemProject = args.Project
+			}
+
 			var r taskResult
 			if isContinue {
 				r = tc.executeContinueTask(ctx, item.SessionID, item.Message)
@@ -375,6 +386,7 @@ func main() {
 					ContextLength: item.ContextLength,
 					Integrations:  item.Integrations,
 					SystemPrompt:  item.SystemPrompt,
+					Project:       itemProject,
 				})
 			}
 
@@ -513,6 +525,11 @@ func main() {
 				tc.groups.Update(grp)
 			}
 
+			itemProject := item.Project
+			if itemProject == "" {
+				itemProject = args.Project
+			}
+
 			var r taskResult
 			if isContinue {
 				msg := item.Message
@@ -538,6 +555,7 @@ func main() {
 					ContextLength: item.ContextLength,
 					Integrations:  item.Integrations,
 					SystemPrompt:  item.SystemPrompt,
+					Project:       itemProject,
 				})
 			}
 
@@ -672,6 +690,7 @@ func main() {
 				ContextLength: args.ContextLength,
 				Integrations:  args.Integrations,
 				SystemPrompt:  args.SystemPrompt,
+				Project:       args.Project,
 			})
 
 			if r.SessionID != "" && grp != nil {

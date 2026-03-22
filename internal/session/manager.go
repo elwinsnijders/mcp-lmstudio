@@ -22,7 +22,7 @@ func NewManager(store *Store, defaultMaxTokens int, warningThreshold, criticalTh
 	}
 }
 
-func (m *Manager) Create(task, profile, model string, maxTokens int, integrationKeys []string) (*Session, error) {
+func (m *Manager) Create(task, profile, model string, maxTokens int, integrationKeys []string, project string) (*Session, error) {
 	if maxTokens <= 0 {
 		maxTokens = m.defaultMaxTokens
 	}
@@ -42,6 +42,7 @@ func (m *Manager) Create(task, profile, model string, maxTokens int, integration
 		TokensMax:       maxTokens,
 		ResponseIDs:     []string{},
 		IntegrationKeys: integrationKeys,
+		Project:         project,
 		CreatedAt:       time.Now(),
 		LastActiveAt:    time.Now(),
 	}
