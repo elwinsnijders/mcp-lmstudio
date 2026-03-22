@@ -34,6 +34,10 @@ export namespace chatlog {
 	    success?: boolean;
 	    output?: string;
 	    reason?: string;
+	    group_id?: string;
+	    group_type?: string;
+	    group_step?: number;
+	    group_total?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatEvent(source);
@@ -53,6 +57,10 @@ export namespace chatlog {
 	        this.success = source["success"];
 	        this.output = source["output"];
 	        this.reason = source["reason"];
+	        this.group_id = source["group_id"];
+	        this.group_type = source["group_type"];
+	        this.group_step = source["group_step"];
+	        this.group_total = source["group_total"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -176,6 +184,40 @@ export namespace main {
 	}
 	
 	
+	export class GroupDTO {
+	    id: string;
+	    type: string;
+	    status: string;
+	    totalSteps: number;
+	    currentStep: number;
+	    succeeded: number;
+	    failed: number;
+	    sessionIds: string[];
+	    chainMode?: string;
+	    stoppedEarly?: boolean;
+	    createdAt: string;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GroupDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.type = source["type"];
+	        this.status = source["status"];
+	        this.totalSteps = source["totalSteps"];
+	        this.currentStep = source["currentStep"];
+	        this.succeeded = source["succeeded"];
+	        this.failed = source["failed"];
+	        this.sessionIds = source["sessionIds"];
+	        this.chainMode = source["chainMode"];
+	        this.stoppedEarly = source["stoppedEarly"];
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class SessionDTO {
 	    id: string;
 	    task: string;
@@ -187,6 +229,8 @@ export namespace main {
 	    tokensPercent: number;
 	    exchanges: number;
 	    integrationKeys: string[];
+	    groupId?: string;
+	    groupStep?: number;
 	    createdAt: string;
 	    lastActiveAt: string;
 	    hasChatLog: boolean;
@@ -207,6 +251,8 @@ export namespace main {
 	        this.tokensPercent = source["tokensPercent"];
 	        this.exchanges = source["exchanges"];
 	        this.integrationKeys = source["integrationKeys"];
+	        this.groupId = source["groupId"];
+	        this.groupStep = source["groupStep"];
 	        this.createdAt = source["createdAt"];
 	        this.lastActiveAt = source["lastActiveAt"];
 	        this.hasChatLog = source["hasChatLog"];

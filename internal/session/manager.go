@@ -90,6 +90,16 @@ func (m *Manager) AddTokens(id string, inputTokens, outputTokens int, responseID
 	return sess, usage, nil
 }
 
+func (m *Manager) SetGroup(id, groupID string, step int) error {
+	sess, ok := m.store.Get(id)
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.GroupID = groupID
+	sess.GroupStep = step
+	return m.store.Put(sess)
+}
+
 func (m *Manager) UpdateStatus(id, status string) error {
 	sess, ok := m.store.Get(id)
 	if !ok {

@@ -15,6 +15,7 @@ import (
 	"github.com/infinitimeless/lmstudio-mcp/internal/profile"
 	"github.com/infinitimeless/lmstudio-mcp/internal/progress"
 	"github.com/infinitimeless/lmstudio-mcp/internal/session"
+	"github.com/infinitimeless/lmstudio-mcp/internal/taskgroup"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -71,6 +72,53 @@ type GetArtifactArgs struct {
 	FilePath  string `json:"file_path,omitempty" jsonschema:"File path to look up (for file-read artifacts)"`
 }
 
+type QueueItem struct {
+	Task          string   `json:"task,omitempty" jsonschema:"Task description (for new task)"`
+	Profile       string   `json:"profile,omitempty" jsonschema:"Agent profile key (e.g. coder, reviewer)"`
+	Context       string   `json:"context,omitempty" jsonschema:"Context from a previous session"`
+	MaxTokens     int      `json:"max_tokens,omitempty" jsonschema:"Token budget for this task"`
+	Temperature   float64  `json:"temperature,omitempty" jsonschema:"Temperature override"`
+	ContextLength int      `json:"context_length,omitempty" jsonschema:"Context window size in tokens"`
+	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable"`
+	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
+	SessionID     string   `json:"session_id,omitempty" jsonschema:"Session ID to continue (makes this a continue_task instead of start_task)"`
+	Message       string   `json:"message,omitempty" jsonschema:"Message for continue_task (used when session_id is set)"`
+}
+
+type QueueTasksArgs struct {
+	Tasks []QueueItem `json:"tasks" jsonschema:"Ordered list of tasks to execute sequentially"`
+}
+
+type ChainItem struct {
+	Task          string   `json:"task,omitempty" jsonschema:"Task description (for new task)"`
+	Profile       string   `json:"profile,omitempty" jsonschema:"Agent profile key (e.g. coder, reviewer)"`
+	Context       string   `json:"context,omitempty" jsonschema:"Additional context (chain results are injected automatically)"`
+	MaxTokens     int      `json:"max_tokens,omitempty" jsonschema:"Token budget for this task"`
+	Temperature   float64  `json:"temperature,omitempty" jsonschema:"Temperature override"`
+	ContextLength int      `json:"context_length,omitempty" jsonschema:"Context window size in tokens"`
+	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable"`
+	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
+	SessionID     string   `json:"session_id,omitempty" jsonschema:"Session ID to continue (makes this a continue_task)"`
+	Message       string   `json:"message,omitempty" jsonschema:"Message for continue_task (used when session_id is set)"`
+}
+
+type ChainTasksArgs struct {
+	Tasks     []ChainItem `json:"tasks" jsonschema:"Ordered list of tasks forming the pipeline"`
+	ChainMode string      `json:"chain_mode,omitempty" jsonschema:"How results flow forward: 'previous' (default, only last result) or 'all' (all accumulated results)"`
+}
+
+type LoopTaskArgs struct {
+	Directive     string   `json:"directive" jsonschema:"Primary directive prompt repeated each iteration"`
+	Profile       string   `json:"profile,omitempty" jsonschema:"Agent profile key (e.g. coder, reviewer)"`
+	MaxLoops      int      `json:"max_loops" jsonschema:"Maximum number of loop iterations"`
+	StopPhrase    string   `json:"stop_phrase,omitempty" jsonschema:"If the worker response contains this phrase the loop stops early"`
+	MaxTokens     int      `json:"max_tokens,omitempty" jsonschema:"Token budget per iteration"`
+	Temperature   float64  `json:"temperature,omitempty" jsonschema:"Temperature override"`
+	ContextLength int      `json:"context_length,omitempty" jsonschema:"Context window size in tokens"`
+	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable"`
+	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt"`
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -104,6 +152,11 @@ func main() {
 		logger.Printf("Warning: artifact store disabled: %v", err)
 	}
 
+	groupStore, err := taskgroup.NewStore(cfg.SessionsDir)
+	if err != nil {
+		logger.Printf("Warning: task group store disabled: %v", err)
+	}
+
 	resolveSessionIntegrations := func(sess *session.Session) []interface{} {
 		if len(sess.IntegrationKeys) == 0 {
 			return nil
@@ -114,6 +167,17 @@ func main() {
 			return nil
 		}
 		return ints
+	}
+
+	tc := &taskContext{
+		lm:                         lm,
+		sessions:                   sessions,
+		profiles:                   profiles,
+		chatWriter:                 chatWriter,
+		artStore:                   artStore,
+		groups:                     groupStore,
+		logger:                     logger,
+		resolveSessionIntegrations: resolveSessionIntegrations,
 	}
 
 	server := mcp.NewServer(
@@ -209,75 +273,18 @@ func main() {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args StartTaskArgs) (*mcp.CallToolResult, any, error) {
 		logger.Printf("start_task profile=%s task=%s", args.Profile, truncate(args.Task, 80))
 
-		integrations, err := profiles.ResolveProfileIntegrations(args.Profile, args.Integrations)
-		if err != nil {
-			return errResult(fmt.Sprintf("Integration error: %v", err)), nil, nil
-		}
-
-		sampling := profiles.ResolveSampling(args.Profile, args.Temperature)
-		ctxLen := profiles.ResolveContextLength(args.Profile, args.ContextLength)
-
-		model := profiles.ResolveModel(args.Profile)
-
-		sess, err := sessions.Create(args.Task, args.Profile, model, args.MaxTokens, args.Integrations)
-		if err != nil {
-			return errResult(fmt.Sprintf("Session creation error: %v", err)), nil, nil
-		}
-
-		systemPrompt := profiles.AssembleSystemPrompt(args.Profile, args.SystemPrompt, args.Context, 0, sess.TokensMax)
-
-		chatReq := &lmstudio.ChatRequest{
-			Model:           model,
-			Input:           args.Task,
-			SystemPrompt:    systemPrompt,
-			Temperature:     sampling.Temperature,
-			TopP:            sampling.TopP,
-			TopK:            sampling.TopK,
-			MinP:            sampling.MinP,
-			RepeatPenalty:   sampling.RepeatPenalty,
-			MaxOutputTokens: sampling.MaxOutputTokens,
-			Reasoning:       sampling.Reasoning,
-			ContextLength:   ctxLen,
-		}
-		if len(integrations) > 0 {
-			chatReq.Integrations = integrations
-		}
-
-		if chatWriter != nil {
-			chatWriter.WriteUserMessage(sess.ID, fmt.Sprintf("%v", args.Task))
-		}
-
-		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, artStore, logger, sess.ID))
-		if err != nil {
-			if chatWriter != nil {
-				chatWriter.WriteError(sess.ID, err.Error())
-			}
-			return errResult(fmt.Sprintf("Session %s created but LM Studio error: %v", sess.ID, err)), nil, nil
-		}
-
-		fullText := formatOutput(chatResp.Output)
-
-		if chatWriter != nil {
-			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
-				InputTokens:  chatResp.Stats.InputTokens,
-				OutputTokens: chatResp.Stats.TotalOutputTokens,
-				TokensPerSec: chatResp.Stats.TokensPerSecond,
-				ResponseID:   chatResp.ResponseID,
-			})
-		}
-
-		_, usage, err := sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
-		if err != nil {
-			logger.Printf("Token tracking error: %v", err)
+		r := tc.executeNewTask(ctx, args)
+		if r.Error != "" {
+			return errResult(r.Error), nil, nil
 		}
 
 		var b strings.Builder
-		fmt.Fprintf(&b, "Session: %s | Profile: %s | Model: %s\n\n", sess.ID, args.Profile, chatResp.ModelInstanceID)
-		b.WriteString(fullText)
-		if usage != nil {
+		fmt.Fprintf(&b, "Session: %s | Profile: %s | Model: %s\n\n", r.SessionID, r.Profile, r.Model)
+		b.WriteString(r.Text)
+		if r.Usage != nil {
 			b.WriteString("\n\n")
-			b.WriteString(sessions.FormatTokenUsage(usage))
-			if w := sessions.TokenWarning(usage); w != "" {
+			b.WriteString(sessions.FormatTokenUsage(r.Usage))
+			if w := sessions.TokenWarning(r.Usage); w != "" {
 				b.WriteString("\n" + w)
 			}
 		}
@@ -292,63 +299,461 @@ func main() {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args ContinueTaskArgs) (*mcp.CallToolResult, any, error) {
 		logger.Printf("continue_task session=%s", args.SessionID)
 
-		sess, err := sessions.Get(args.SessionID)
-		if err != nil {
-			return errResult(fmt.Sprintf("Error: %v", err)), nil, nil
-		}
-		if sess.Status != session.StatusActive {
-			return errResult(fmt.Sprintf("Session %s is %s, not active.", sess.ID, sess.Status)), nil, nil
-		}
-
-		chatReq := &lmstudio.ChatRequest{
-			Model: sess.Model,
-			Input: args.Message,
-		}
-		if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
-			chatReq.Integrations = ints
-		}
-		if sess.LatestResponseID != "" {
-			chatReq.PreviousResponseID = sess.LatestResponseID
-		}
-
-		if chatWriter != nil {
-			chatWriter.WriteUserMessage(sess.ID, args.Message)
-		}
-
-		chatResp, err := lm.ChatStream(ctx, chatReq, buildStreamCallbacks(chatWriter, artStore, logger, sess.ID))
-		if err != nil {
-			if chatWriter != nil {
-				chatWriter.WriteError(sess.ID, err.Error())
-			}
-			return errResult(fmt.Sprintf("LM Studio error: %v", err)), nil, nil
-		}
-
-		fullText := formatOutput(chatResp.Output)
-
-		if chatWriter != nil {
-			chatWriter.WriteComplete(sess.ID, fullText, &chatlog.ChatStats{
-				InputTokens:  chatResp.Stats.InputTokens,
-				OutputTokens: chatResp.Stats.TotalOutputTokens,
-				TokensPerSec: chatResp.Stats.TokensPerSecond,
-				ResponseID:   chatResp.ResponseID,
-			})
-		}
-
-		_, usage, err := sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
-		if err != nil {
-			logger.Printf("Token tracking error: %v", err)
+		r := tc.executeContinueTask(ctx, args.SessionID, args.Message)
+		if r.Error != "" {
+			return errResult(r.Error), nil, nil
 		}
 
 		var b strings.Builder
-		b.WriteString(fullText)
-		if usage != nil {
+		b.WriteString(r.Text)
+		if r.Usage != nil {
 			b.WriteString("\n\n")
-			b.WriteString(sessions.FormatTokenUsage(usage))
-			if w := sessions.TokenWarning(usage); w != "" {
+			b.WriteString(sessions.FormatTokenUsage(r.Usage))
+			if w := sessions.TokenWarning(r.Usage); w != "" {
 				b.WriteString("\n" + w)
 			}
 		}
 		return textResult(b.String()), nil, nil
+	})
+
+	// ── queue_tasks ────────────────────────────────────────────────────
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "queue_tasks",
+		Description: "Execute multiple independent tasks sequentially in one call. Each task can be a new task (provide task+profile) or a continuation (provide session_id+message). All results are collected and returned together, never truncated. Tasks do NOT share results with each other — use chain_tasks for that.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args QueueTasksArgs) (*mcp.CallToolResult, any, error) {
+		logger.Printf("queue_tasks count=%d", len(args.Tasks))
+
+		if len(args.Tasks) == 0 {
+			return errResult("No tasks provided. Pass at least one task."), nil, nil
+		}
+
+		total := len(args.Tasks)
+
+		var grp *taskgroup.Group
+		if tc.groups != nil {
+			var err error
+			grp, err = tc.groups.Create(taskgroup.TypeQueue, total)
+			if err != nil {
+				logger.Printf("Warning: failed to create task group: %v", err)
+			}
+		}
+
+		succeeded := 0
+		failed := 0
+		var out strings.Builder
+
+		for i, item := range args.Tasks {
+			step := i + 1
+			isContinue := item.SessionID != ""
+
+			if isContinue {
+				fmt.Fprintf(&out, "=== Task %d/%d [CONTINUE %s] ===\n", step, total, item.SessionID)
+			} else {
+				label := item.Profile
+				if label == "" {
+					label = "default"
+				}
+				fmt.Fprintf(&out, "=== Task %d/%d [NEW - %s] ===\n", step, total, label)
+			}
+
+			if grp != nil {
+				grp.CurrentStep = step
+				tc.groups.Update(grp)
+			}
+
+			var r taskResult
+			if isContinue {
+				r = tc.executeContinueTask(ctx, item.SessionID, item.Message)
+			} else {
+				r = tc.executeNewTask(ctx, StartTaskArgs{
+					Task:          item.Task,
+					Profile:       item.Profile,
+					Context:       item.Context,
+					MaxTokens:     item.MaxTokens,
+					Temperature:   item.Temperature,
+					ContextLength: item.ContextLength,
+					Integrations:  item.Integrations,
+					SystemPrompt:  item.SystemPrompt,
+				})
+			}
+
+			if r.SessionID != "" && grp != nil {
+				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
+				tc.groups.Update(grp)
+				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+			}
+
+			if chatWriter != nil && r.SessionID != "" {
+				if step == 1 {
+					chatWriter.WriteGroupStart(r.SessionID, grpID(grp), taskgroup.TypeQueue, total)
+				}
+				chatWriter.WriteGroupStep(r.SessionID, grpID(grp), step, total)
+			}
+
+			if r.Error != "" {
+				failed++
+				fmt.Fprintf(&out, "ERROR: %s\n", r.Error)
+			} else {
+				succeeded++
+				if r.SessionID != "" {
+					fmt.Fprintf(&out, "Session: %s", r.SessionID)
+					if r.Model != "" {
+						fmt.Fprintf(&out, " | Model: %s", r.Model)
+					}
+					out.WriteString("\n")
+				}
+				out.WriteString("\n")
+				out.WriteString(r.Text)
+				if r.Usage != nil {
+					out.WriteString("\n\n")
+					out.WriteString(sessions.FormatTokenUsage(r.Usage))
+					if w := sessions.TokenWarning(r.Usage); w != "" {
+						out.WriteString("\n" + w)
+					}
+				}
+			}
+			out.WriteString("\n\n")
+		}
+
+		if grp != nil {
+			grp.Succeeded = succeeded
+			grp.Failed = failed
+			if failed > 0 && succeeded == 0 {
+				grp.Status = taskgroup.StatusFailed
+			} else {
+				grp.Status = taskgroup.StatusCompleted
+			}
+			tc.groups.Update(grp)
+		}
+
+		lastSessionID := ""
+		if grp != nil && len(grp.SessionIDs) > 0 {
+			lastSessionID = grp.SessionIDs[len(grp.SessionIDs)-1]
+		}
+		if chatWriter != nil && lastSessionID != "" {
+			chatWriter.WriteGroupComplete(lastSessionID, grpID(grp), taskgroup.TypeQueue, succeeded, failed, false)
+		}
+
+		fmt.Fprintf(&out, "=== Queue Complete: %d/%d succeeded", succeeded, total)
+		if failed > 0 {
+			fmt.Fprintf(&out, " | %d failed", failed)
+		}
+		out.WriteString(" ===\n")
+
+		return textResult(out.String()), nil, nil
+	})
+
+	// ── chain_tasks ────────────────────────────────────────────────────
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "chain_tasks",
+		Description: "Execute tasks sequentially as a pipeline where results flow forward. Each task receives previous results as context. Set chain_mode to 'previous' (default, only last result) or 'all' (all accumulated results). Each item can be a new task (task+profile) or continuation (session_id+message). Stops on first failure since downstream steps depend on prior results.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args ChainTasksArgs) (*mcp.CallToolResult, any, error) {
+		logger.Printf("chain_tasks count=%d mode=%s", len(args.Tasks), args.ChainMode)
+
+		if len(args.Tasks) < 2 {
+			return errResult("Chain requires at least 2 tasks."), nil, nil
+		}
+
+		mode := args.ChainMode
+		if mode == "" {
+			mode = "previous"
+		}
+		if mode != "previous" && mode != "all" {
+			return errResult("chain_mode must be 'previous' or 'all'."), nil, nil
+		}
+
+		total := len(args.Tasks)
+
+		var grp *taskgroup.Group
+		if tc.groups != nil {
+			var err error
+			grp, err = tc.groups.Create(taskgroup.TypeChain, total)
+			if err != nil {
+				logger.Printf("Warning: failed to create task group: %v", err)
+			} else {
+				grp.ChainMode = mode
+				tc.groups.Update(grp)
+			}
+		}
+
+		completed := 0
+		failed := 0
+		var out strings.Builder
+		var allResults []chainStepResult
+
+		for i, item := range args.Tasks {
+			step := i + 1
+			isContinue := item.SessionID != ""
+
+			chainCtx := buildChainContext(allResults, mode, i)
+
+			contextNote := ""
+			if i > 0 {
+				if mode == "previous" {
+					contextNote = fmt.Sprintf(" (received: step %d result)", i)
+				} else {
+					contextNote = fmt.Sprintf(" (received: steps 1-%d results)", i)
+				}
+			}
+
+			if isContinue {
+				fmt.Fprintf(&out, "=== Step %d/%d [CONTINUE %s]%s ===\n", step, total, item.SessionID, contextNote)
+			} else {
+				label := item.Profile
+				if label == "" {
+					label = "default"
+				}
+				fmt.Fprintf(&out, "=== Step %d/%d [NEW - %s]%s ===\n", step, total, label, contextNote)
+			}
+
+			if grp != nil {
+				grp.CurrentStep = step
+				tc.groups.Update(grp)
+			}
+
+			var r taskResult
+			if isContinue {
+				msg := item.Message
+				if chainCtx != "" {
+					msg = "--- RESULTS FROM PREVIOUS CHAIN STEPS ---\n" + chainCtx + "\n--- YOUR TASK ---\n" + msg
+				}
+				r = tc.executeContinueTask(ctx, item.SessionID, msg)
+			} else {
+				taskCtx := item.Context
+				if chainCtx != "" {
+					if taskCtx != "" {
+						taskCtx = taskCtx + "\n\n" + chainCtx
+					} else {
+						taskCtx = chainCtx
+					}
+				}
+				r = tc.executeNewTask(ctx, StartTaskArgs{
+					Task:          item.Task,
+					Profile:       item.Profile,
+					Context:       taskCtx,
+					MaxTokens:     item.MaxTokens,
+					Temperature:   item.Temperature,
+					ContextLength: item.ContextLength,
+					Integrations:  item.Integrations,
+					SystemPrompt:  item.SystemPrompt,
+				})
+			}
+
+			if r.SessionID != "" && grp != nil {
+				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
+				tc.groups.Update(grp)
+				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+			}
+
+			if chatWriter != nil && r.SessionID != "" {
+				if step == 1 {
+					chatWriter.WriteGroupStart(r.SessionID, grpID(grp), taskgroup.TypeChain, total)
+				}
+				chatWriter.WriteGroupStep(r.SessionID, grpID(grp), step, total)
+			}
+
+			if r.Error != "" {
+				failed++
+				fmt.Fprintf(&out, "ERROR: %s\n\n", r.Error)
+
+				if grp != nil {
+					grp.Succeeded = completed
+					grp.Failed = 1
+					grp.Status = taskgroup.StatusFailed
+					tc.groups.Update(grp)
+				}
+				if chatWriter != nil && r.SessionID != "" {
+					chatWriter.WriteGroupComplete(r.SessionID, grpID(grp), taskgroup.TypeChain, completed, 1, false)
+				}
+
+				fmt.Fprintf(&out, "=== Chain Stopped: step %d/%d failed | Mode: %s ===\n", step, total, mode)
+				return textResult(out.String()), nil, nil
+			}
+
+			completed++
+			allResults = append(allResults, chainStepResult{
+				StepNum:   step,
+				Profile:   r.Profile,
+				SessionID: r.SessionID,
+				Text:      r.Text,
+			})
+
+			if r.SessionID != "" {
+				fmt.Fprintf(&out, "Session: %s", r.SessionID)
+				if r.Model != "" {
+					fmt.Fprintf(&out, " | Model: %s", r.Model)
+				}
+				out.WriteString("\n")
+			}
+			out.WriteString("\n")
+			out.WriteString(r.Text)
+			if r.Usage != nil {
+				out.WriteString("\n\n")
+				out.WriteString(sessions.FormatTokenUsage(r.Usage))
+				if w := sessions.TokenWarning(r.Usage); w != "" {
+					out.WriteString("\n" + w)
+				}
+			}
+			out.WriteString("\n\n")
+		}
+
+		if grp != nil {
+			grp.Succeeded = completed
+			grp.Status = taskgroup.StatusCompleted
+			tc.groups.Update(grp)
+		}
+
+		lastSessionID := ""
+		if grp != nil && len(grp.SessionIDs) > 0 {
+			lastSessionID = grp.SessionIDs[len(grp.SessionIDs)-1]
+		}
+		if chatWriter != nil && lastSessionID != "" {
+			chatWriter.WriteGroupComplete(lastSessionID, grpID(grp), taskgroup.TypeChain, completed, 0, false)
+		}
+
+		fmt.Fprintf(&out, "=== Chain Complete: %d/%d succeeded | Mode: %s ===\n", completed, total, mode)
+		return textResult(out.String()), nil, nil
+	})
+
+	// ── loop_task ──────────────────────────────────────────────────────
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "loop_task",
+		Description: "Execute a task iteratively with fresh context each loop. The directive prompt is repeated every iteration, with the previous iteration's result passed as context. Loops until max_loops or until stop_phrase is detected in the worker response. Each iteration gets a fresh session.",
+	}, func(ctx context.Context, req *mcp.CallToolRequest, args LoopTaskArgs) (*mcp.CallToolResult, any, error) {
+		logger.Printf("loop_task max=%d profile=%s directive=%s", args.MaxLoops, args.Profile, truncate(args.Directive, 80))
+
+		if args.Directive == "" {
+			return errResult("directive is required."), nil, nil
+		}
+		if args.MaxLoops < 1 {
+			return errResult("max_loops must be at least 1."), nil, nil
+		}
+
+		var grp *taskgroup.Group
+		if tc.groups != nil {
+			var err error
+			grp, err = tc.groups.Create(taskgroup.TypeLoop, args.MaxLoops)
+			if err != nil {
+				logger.Printf("Warning: failed to create task group: %v", err)
+			} else {
+				grp.Directive = truncate(args.Directive, 200)
+				grp.StopPhrase = args.StopPhrase
+				tc.groups.Update(grp)
+			}
+		}
+
+		var out strings.Builder
+		var prevResult string
+		stoppedEarly := false
+		completed := 0
+
+		for i := 0; i < args.MaxLoops; i++ {
+			step := i + 1
+			taskInput := args.Directive
+			var taskCtx string
+			if prevResult != "" {
+				taskCtx = fmt.Sprintf("--- PREVIOUS ITERATION RESULT (iteration %d) ---\n%s", i, prevResult)
+			}
+
+			if grp != nil {
+				grp.CurrentStep = step
+				tc.groups.Update(grp)
+			}
+
+			r := tc.executeNewTask(ctx, StartTaskArgs{
+				Task:          taskInput,
+				Profile:       args.Profile,
+				Context:       taskCtx,
+				MaxTokens:     args.MaxTokens,
+				Temperature:   args.Temperature,
+				ContextLength: args.ContextLength,
+				Integrations:  args.Integrations,
+				SystemPrompt:  args.SystemPrompt,
+			})
+
+			if r.SessionID != "" && grp != nil {
+				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
+				tc.groups.Update(grp)
+				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+			}
+
+			if chatWriter != nil && r.SessionID != "" {
+				if step == 1 {
+					chatWriter.WriteGroupStart(r.SessionID, grpID(grp), taskgroup.TypeLoop, args.MaxLoops)
+				}
+				chatWriter.WriteGroupStep(r.SessionID, grpID(grp), step, args.MaxLoops)
+			}
+
+			if r.Error != "" {
+				if grp != nil {
+					grp.Succeeded = completed
+					grp.Failed = 1
+					grp.Status = taskgroup.StatusFailed
+					tc.groups.Update(grp)
+				}
+				if chatWriter != nil && r.SessionID != "" {
+					chatWriter.WriteGroupComplete(r.SessionID, grpID(grp), taskgroup.TypeLoop, completed, 1, false)
+				}
+				fmt.Fprintf(&out, "=== Iteration %d/%d [ERROR] ===\n", step, args.MaxLoops)
+				fmt.Fprintf(&out, "ERROR: %s\n\n", r.Error)
+				fmt.Fprintf(&out, "=== Loop Stopped: iteration %d/%d failed ===\n", step, args.MaxLoops)
+				return textResult(out.String()), nil, nil
+			}
+
+			completed++
+			prevResult = r.Text
+
+			stopped := ""
+			if args.StopPhrase != "" && strings.Contains(r.Text, args.StopPhrase) {
+				stoppedEarly = true
+				stopped = " [STOPPED - stop phrase detected]"
+			}
+
+			fmt.Fprintf(&out, "=== Iteration %d/%d%s ===\n", step, args.MaxLoops, stopped)
+			if r.SessionID != "" {
+				fmt.Fprintf(&out, "Session: %s\n", r.SessionID)
+			}
+			out.WriteString("\n")
+			out.WriteString(r.Text)
+			if r.Usage != nil {
+				out.WriteString("\n\n")
+				out.WriteString(sessions.FormatTokenUsage(r.Usage))
+				if w := sessions.TokenWarning(r.Usage); w != "" {
+					out.WriteString("\n" + w)
+				}
+			}
+			out.WriteString("\n\n")
+
+			if stoppedEarly {
+				break
+			}
+		}
+
+		if grp != nil {
+			grp.Succeeded = completed
+			grp.StoppedEarly = stoppedEarly
+			grp.Status = taskgroup.StatusCompleted
+			tc.groups.Update(grp)
+		}
+
+		lastSessionID := ""
+		if grp != nil && len(grp.SessionIDs) > 0 {
+			lastSessionID = grp.SessionIDs[len(grp.SessionIDs)-1]
+		}
+		if chatWriter != nil && lastSessionID != "" {
+			chatWriter.WriteGroupComplete(lastSessionID, grpID(grp), taskgroup.TypeLoop, completed, 0, stoppedEarly)
+		}
+
+		fmt.Fprintf(&out, "=== Loop Complete: %d/%d iterations", completed, args.MaxLoops)
+		if stoppedEarly {
+			out.WriteString(" | Stopped early: yes")
+		}
+		out.WriteString(" ===\n")
+
+		return textResult(out.String()), nil, nil
 	})
 
 	// ── save_progress ───────────────────────────────────────────────────

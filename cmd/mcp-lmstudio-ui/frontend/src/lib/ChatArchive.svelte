@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { ListSessions, LoadChatLog } from '../../wailsjs/go/main/App'
+  import { ListSessions, LoadChatLog, GetGroup } from '../../wailsjs/go/main/App'
   import { marked } from 'marked'
 
   marked.setOptions({ breaks: true, gfm: true })
@@ -22,6 +22,7 @@
   let messages = []
   let loading = false
   let expanded = {}
+  let groupInfo = null
 
   $: if (selected) {
     loadChat(selected)
@@ -41,10 +42,18 @@
   async function loadChat(id) {
     loading = true
     expanded = {}
+    groupInfo = null
     try {
       const result = await LoadChatLog(id)
       events = result || []
       messages = collapseEvents(events)
+
+      const sess = sessions.find(s => s.id === id)
+      if (sess && sess.groupId) {
+        try {
+          groupInfo = await GetGroup(sess.groupId)
+        } catch (_) {}
+      }
     } catch (e) {
       console.error('Failed to load chat:', e)
       events = []
@@ -121,6 +130,27 @@
           })
           break
         case 'status':
+          break
+        case 'group_start':
+          msgs.push({
+            role: 'group_event', eventType: 'start',
+            content: `${(ev.group_type || 'group').toUpperCase()} started — ${ev.group_total} steps`,
+            ts: ev.ts
+          })
+          break
+        case 'group_step':
+          msgs.push({
+            role: 'group_event', eventType: 'step',
+            content: `Step ${ev.group_step}/${ev.group_total}`,
+            ts: ev.ts
+          })
+          break
+        case 'group_complete':
+          msgs.push({
+            role: 'group_event', eventType: 'complete',
+            content: ev.content || `${(ev.group_type || 'group').toUpperCase()} complete`,
+            ts: ev.ts
+          })
           break
       }
     }
@@ -212,6 +242,32 @@
     </div>
   {/if}
 
+  {#if groupInfo}
+    {@const g = groupInfo}
+    {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
+    <div class="mb-3 shrink-0 px-4 py-2 bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-xs">
+      <span class="font-bold uppercase tracking-wider {g.type === 'queue' ? 'text-indigo-600' : g.type === 'chain' ? 'text-teal-600' : 'text-orange-600'}">
+        {g.type}
+      </span>
+      <span class="text-gray-500">Step {g.currentStep}/{g.totalSteps}</span>
+      <div class="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        <div class="h-full rounded-full {g.status === 'failed' ? 'bg-red-500' : g.status === 'completed' ? 'bg-emerald-500' : 'bg-violet-500'}" style="width: {Math.min(pct, 100)}%"></div>
+      </div>
+      <span class="font-semibold {g.status === 'running' ? 'text-emerald-600' : g.status === 'completed' ? 'text-gray-600' : 'text-red-600'}">
+        {g.status}
+      </span>
+      {#if g.chainMode}
+        <span class="text-gray-400">mode: {g.chainMode}</span>
+      {/if}
+      {#if g.stoppedEarly}
+        <span class="text-orange-500 font-medium">stopped early</span>
+      {/if}
+      {#if sessionInfo?.groupStep}
+        <span class="ml-auto text-gray-400">This session is step {sessionInfo.groupStep}</span>
+      {/if}
+    </div>
+  {/if}
+
   <div class="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col min-h-0">
     <div class="flex-1 overflow-y-auto p-6 space-y-6">
       {#if !selected}
@@ -240,12 +296,14 @@
                  msg.role === 'assistant' ? 'text-emerald-600' :
                  msg.role === 'reasoning' ? 'text-blue-500' :
                  msg.role === 'error' ? 'text-red-500' :
+                 msg.role === 'group_event' ? 'text-indigo-500' :
                  msg.role === 'tool_start' || msg.role === 'tool_result' ? 'text-amber-600' :
                  'text-amber-600'}">
                 {msg.role === 'user' ? 'User' :
                  msg.role === 'assistant' ? 'AI' :
                  msg.role === 'reasoning' ? 'Reasoning' :
                  msg.role === 'error' ? 'Error' :
+                 msg.role === 'group_event' ? 'Group' :
                  msg.role === 'tool_start' ? 'Tool Call' :
                  msg.role === 'tool_result' ? 'Tool Result' :
                  'Tool'}
@@ -280,6 +338,16 @@
                   {formatStats(msg.stats)}
                 </div>
               {/if}
+
+            {:else if msg.role === 'group_event'}
+              <div class="flex justify-center">
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-semibold
+                  {msg.eventType === 'start' ? 'bg-indigo-50 border border-indigo-200 text-indigo-700' :
+                   msg.eventType === 'complete' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' :
+                   'bg-gray-100 border border-gray-200 text-gray-600'}">
+                  {msg.content}
+                </div>
+              </div>
 
             {:else if msg.role === 'error'}
               <div class="pl-3 border-l-2 border-red-200">

@@ -21,19 +21,37 @@ type App struct {
 
 // SessionDTO is the frontend-facing session representation.
 type SessionDTO struct {
-	ID               string  `json:"id"`
-	Task             string  `json:"task"`
-	Profile          string  `json:"profile"`
-	Model            string  `json:"model"`
-	Status           string  `json:"status"`
-	TokensUsed       int     `json:"tokensUsed"`
-	TokensMax        int     `json:"tokensMax"`
-	TokensPercent    float64 `json:"tokensPercent"`
-	Exchanges        int     `json:"exchanges"`
+	ID               string   `json:"id"`
+	Task             string   `json:"task"`
+	Profile          string   `json:"profile"`
+	Model            string   `json:"model"`
+	Status           string   `json:"status"`
+	TokensUsed       int      `json:"tokensUsed"`
+	TokensMax        int      `json:"tokensMax"`
+	TokensPercent    float64  `json:"tokensPercent"`
+	Exchanges        int      `json:"exchanges"`
 	IntegrationKeys  []string `json:"integrationKeys"`
-	CreatedAt        string  `json:"createdAt"`
-	LastActiveAt     string  `json:"lastActiveAt"`
-	HasChatLog       bool    `json:"hasChatLog"`
+	GroupID          string   `json:"groupId,omitempty"`
+	GroupStep        int      `json:"groupStep,omitempty"`
+	CreatedAt        string   `json:"createdAt"`
+	LastActiveAt     string   `json:"lastActiveAt"`
+	HasChatLog       bool     `json:"hasChatLog"`
+}
+
+// GroupDTO is the frontend-facing task group representation.
+type GroupDTO struct {
+	ID           string   `json:"id"`
+	Type         string   `json:"type"`
+	Status       string   `json:"status"`
+	TotalSteps   int      `json:"totalSteps"`
+	CurrentStep  int      `json:"currentStep"`
+	Succeeded    int      `json:"succeeded"`
+	Failed       int      `json:"failed"`
+	SessionIDs   []string `json:"sessionIds"`
+	ChainMode    string   `json:"chainMode,omitempty"`
+	StoppedEarly bool     `json:"stoppedEarly,omitempty"`
+	CreatedAt    string   `json:"createdAt"`
+	UpdatedAt    string   `json:"updatedAt"`
 }
 
 // ConfigDTO wraps the config.json structure for the frontend.
@@ -154,6 +172,8 @@ type rawSession struct {
 	TokensMax        int       `json:"tokens_max"`
 	ResponseIDs      []string  `json:"response_ids"`
 	IntegrationKeys  []string  `json:"integration_keys,omitempty"`
+	GroupID          string    `json:"group_id,omitempty"`
+	GroupStep        int       `json:"group_step,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	LastActiveAt     time.Time `json:"last_active_at"`
 }
@@ -198,6 +218,8 @@ func (a *App) ListSessions() ([]SessionDTO, error) {
 			TokensPercent:   pct,
 			Exchanges:       len(s.ResponseIDs),
 			IntegrationKeys: s.IntegrationKeys,
+			GroupID:         s.GroupID,
+			GroupStep:       s.GroupStep,
 			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
 			LastActiveAt:    s.LastActiveAt.Format(time.RFC3339),
 			HasChatLog:      hasChatLog,
@@ -223,6 +245,76 @@ func (a *App) GetActiveSessions() ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// ── Task Groups ─────────────────────────────────────────────────────────
+
+type rawGroup struct {
+	ID           string    `json:"id"`
+	Type         string    `json:"type"`
+	Status       string    `json:"status"`
+	TotalSteps   int       `json:"total_steps"`
+	CurrentStep  int       `json:"current_step"`
+	Succeeded    int       `json:"succeeded"`
+	Failed       int       `json:"failed"`
+	SessionIDs   []string  `json:"session_ids"`
+	ChainMode    string    `json:"chain_mode,omitempty"`
+	StoppedEarly bool      `json:"stopped_early,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (a *App) ListGroups() ([]GroupDTO, error) {
+	groupsPath := filepath.Join(a.dataDir, "sessions", "groups.json")
+	data, err := os.ReadFile(groupsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []GroupDTO{}, nil
+		}
+		return nil, fmt.Errorf("reading groups: %w", err)
+	}
+
+	var raw []rawGroup
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing groups: %w", err)
+	}
+
+	dtos := make([]GroupDTO, 0, len(raw))
+	for _, g := range raw {
+		dtos = append(dtos, GroupDTO{
+			ID:           g.ID,
+			Type:         g.Type,
+			Status:       g.Status,
+			TotalSteps:   g.TotalSteps,
+			CurrentStep:  g.CurrentStep,
+			Succeeded:    g.Succeeded,
+			Failed:       g.Failed,
+			SessionIDs:   g.SessionIDs,
+			ChainMode:    g.ChainMode,
+			StoppedEarly: g.StoppedEarly,
+			CreatedAt:    g.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:    g.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
+	sort.Slice(dtos, func(i, j int) bool {
+		return dtos[i].UpdatedAt > dtos[j].UpdatedAt
+	})
+
+	return dtos, nil
+}
+
+func (a *App) GetGroup(id string) (*GroupDTO, error) {
+	groups, err := a.ListGroups()
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range groups {
+		if g.ID == id {
+			return &g, nil
+		}
+	}
+	return nil, fmt.Errorf("group %q not found", id)
 }
 
 // ── Chat Logs ───────────────────────────────────────────────────────────

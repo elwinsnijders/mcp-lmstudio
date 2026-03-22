@@ -7,6 +7,10 @@ export function GetActiveSessions():Promise<Array<string>>;
 
 export function GetDataDir():Promise<string>;
 
+export function GetGroup(arg1:string):Promise<main.GroupDTO>;
+
+export function ListGroups():Promise<Array<main.GroupDTO>>;
+
 export function ListSessions():Promise<Array<main.SessionDTO>>;
 
 export function LoadChatLog(arg1:string):Promise<Array<chatlog.ChatEvent>>;

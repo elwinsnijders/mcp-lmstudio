@@ -144,6 +144,39 @@ func (w *Writer) WriteToolCallResult(sessionID, tool, arguments, output, reason 
 	})
 }
 
+func (w *Writer) WriteGroupStart(sessionID, groupID, groupType string, totalSteps int) error {
+	return w.Write(ChatEvent{
+		Type:       EventGroupStart,
+		SessionID:  sessionID,
+		GroupID:    groupID,
+		GroupType:  groupType,
+		GroupTotal: totalSteps,
+	})
+}
+
+func (w *Writer) WriteGroupStep(sessionID, groupID string, step, total int) error {
+	return w.Write(ChatEvent{
+		Type:       EventGroupStep,
+		SessionID:  sessionID,
+		GroupID:    groupID,
+		GroupStep:  step,
+		GroupTotal: total,
+	})
+}
+
+func (w *Writer) WriteGroupComplete(sessionID, groupID, groupType string, succeeded, failed int, stoppedEarly bool) error {
+	return w.Write(ChatEvent{
+		Type:       EventGroupComplete,
+		SessionID:  sessionID,
+		GroupID:    groupID,
+		GroupType:  groupType,
+		GroupStep:  succeeded,
+		GroupTotal: succeeded + failed,
+		Content:    fmt.Sprintf("%s complete: %d succeeded, %d failed", groupType, succeeded, failed),
+		Success:    &stoppedEarly,
+	})
+}
+
 // ReadAll reads all chat events for a session.
 func ReadAll(dir, sessionID string) ([]ChatEvent, error) {
 	path := filepath.Join(dir, sessionID+".jsonl")

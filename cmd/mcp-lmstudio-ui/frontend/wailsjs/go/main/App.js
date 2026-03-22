@@ -10,6 +10,14 @@ export function GetDataDir() {
   return window['go']['main']['App']['GetDataDir']();
 }
 
+export function GetGroup(arg1) {
+  return window['go']['main']['App']['GetGroup'](arg1);
+}
+
+export function ListGroups() {
+  return window['go']['main']['App']['ListGroups']();
+}
+
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }

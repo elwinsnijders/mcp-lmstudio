@@ -14,6 +14,9 @@ const (
 	EventToolCallStart  = "tool_call_start"
 	EventToolCallResult = "tool_call_result"
 	EventStatus         = "status"
+	EventGroupStart     = "group_start"
+	EventGroupStep      = "group_step"
+	EventGroupComplete  = "group_complete"
 )
 
 type ChatEvent struct {
@@ -29,6 +32,11 @@ type ChatEvent struct {
 	Success   *bool      `json:"success,omitempty"`
 	Output    string     `json:"output,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
+
+	GroupID    string `json:"group_id,omitempty"`
+	GroupType  string `json:"group_type,omitempty"`
+	GroupStep  int    `json:"group_step,omitempty"`
+	GroupTotal int    `json:"group_total,omitempty"`
 }
 
 type ChatStats struct {

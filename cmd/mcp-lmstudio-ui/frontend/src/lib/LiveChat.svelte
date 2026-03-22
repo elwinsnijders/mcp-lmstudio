@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { GetActiveSessions, LoadChatLog, StartChatWatch, StopChatWatch } from '../../wailsjs/go/main/App'
+  import { GetActiveSessions, ListSessions, LoadChatLog, StartChatWatch, StopChatWatch, GetGroup } from '../../wailsjs/go/main/App'
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
   import { marked } from 'marked'
 
@@ -46,6 +46,9 @@
     if (!s || s.length <= max) return s
     return s.slice(0, max) + '\n... (truncated)'
   }
+
+  let groupInfo = null
+  let groupPollTimer = null
 
   let loadDebounceTimer = null
 
@@ -105,6 +108,7 @@
     StopChatWatch().catch(() => {})
     if (refreshInterval) clearInterval(refreshInterval)
     if (loadDebounceTimer) clearTimeout(loadDebounceTimer)
+    if (groupPollTimer) clearInterval(groupPollTimer)
     stopTypewriter()
   })
 
@@ -139,6 +143,17 @@
     isReasoning = false
     statusPhase = ''
     statusProgress = 0
+    groupInfo = null
+    if (groupPollTimer) { clearInterval(groupPollTimer); groupPollTimer = null }
+
+    try {
+      const allSessions = await ListSessions()
+      const sess = (allSessions || []).find(s => s.id === sessionId)
+      if (sess && sess.groupId) {
+        await loadGroupInfo(sess.groupId)
+        groupPollTimer = setInterval(() => loadGroupInfo(sess.groupId), 3000)
+      }
+    } catch (_) {}
 
     try {
       const events = await LoadChatLog(sessionId)
@@ -151,6 +166,17 @@
     if (loadId !== selectedSession) return
     StartChatWatch(sessionId)
     await scrollToBottom()
+  }
+
+  async function loadGroupInfo(groupId) {
+    try {
+      const g = await GetGroup(groupId)
+      if (g) groupInfo = g
+    } catch (_) {}
+  }
+
+  function switchGroupSession(sessionId) {
+    selectedSession = sessionId
   }
 
   function processHistoricEvents(events) {
@@ -225,6 +251,27 @@
           })
           break
         case 'status':
+          break
+        case 'group_start':
+          msgs.push({
+            role: 'group_event', eventType: 'start',
+            groupType: ev.group_type, groupTotal: ev.group_total, groupId: ev.group_id,
+            content: `${(ev.group_type || 'group').toUpperCase()} started — ${ev.group_total} steps`
+          })
+          break
+        case 'group_step':
+          msgs.push({
+            role: 'group_event', eventType: 'step',
+            groupStep: ev.group_step, groupTotal: ev.group_total, groupId: ev.group_id,
+            content: `Step ${ev.group_step}/${ev.group_total}`
+          })
+          break
+        case 'group_complete':
+          msgs.push({
+            role: 'group_event', eventType: 'complete',
+            groupType: ev.group_type,
+            content: ev.content || `${(ev.group_type || 'group').toUpperCase()} complete`
+          })
           break
       }
     }
@@ -333,6 +380,38 @@
         }]
         break
       }
+
+      case 'group_start':
+        messages = [...messages, {
+          role: 'group_event',
+          eventType: 'start',
+          groupType: event.group_type,
+          groupTotal: event.group_total,
+          groupId: event.group_id,
+          content: `${(event.group_type || 'group').toUpperCase()} started — ${event.group_total} steps`
+        }]
+        if (event.group_id) loadGroupInfo(event.group_id)
+        break
+      case 'group_step':
+        messages = [...messages, {
+          role: 'group_event',
+          eventType: 'step',
+          groupStep: event.group_step,
+          groupTotal: event.group_total,
+          groupId: event.group_id,
+          content: `Step ${event.group_step}/${event.group_total}`
+        }]
+        if (event.group_id) loadGroupInfo(event.group_id)
+        break
+      case 'group_complete':
+        messages = [...messages, {
+          role: 'group_event',
+          eventType: 'complete',
+          groupType: event.group_type,
+          content: event.content || `${(event.group_type || 'group').toUpperCase()} complete`
+        }]
+        if (event.group_id) loadGroupInfo(event.group_id)
+        break
     }
 
     if (autoScroll) {
@@ -436,6 +515,40 @@
   <div
     class="flex-1 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col min-h-0"
   >
+    {#if groupInfo}
+      {@const g = groupInfo}
+      {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
+      <div class="px-4 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-3 text-xs shrink-0">
+        <span class="font-bold uppercase tracking-wider {g.type === 'queue' ? 'text-indigo-600' : g.type === 'chain' ? 'text-teal-600' : 'text-orange-600'}">
+          {g.type}
+        </span>
+        <span class="text-gray-500">Step {g.currentStep}/{g.totalSteps}</span>
+        <div class="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all {g.status === 'failed' ? 'bg-red-500' : g.status === 'completed' ? 'bg-emerald-500' : 'bg-violet-500'}" style="width: {Math.min(pct, 100)}%"></div>
+        </div>
+        <span class="font-semibold {g.status === 'running' ? 'text-emerald-600' : g.status === 'completed' ? 'text-gray-600' : 'text-red-600'}">
+          {g.status}
+        </span>
+        {#if g.chainMode}
+          <span class="text-gray-400">mode: {g.chainMode}</span>
+        {/if}
+        {#if g.stoppedEarly}
+          <span class="text-orange-500 font-medium">stopped early</span>
+        {/if}
+        {#if g.sessionIds && g.sessionIds.length > 1}
+          <span class="ml-auto flex items-center gap-1">
+            {#each g.sessionIds as sid, idx}
+              <button
+                class="px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors {sid === selectedSession ? 'bg-violet-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}"
+                on:click={() => switchGroupSession(sid)}
+                title="Step {idx + 1}: {sid}"
+              >{idx + 1}</button>
+            {/each}
+          </span>
+        {/if}
+      </div>
+    {/if}
+
     <div
       bind:this={chatContainer}
       on:scroll={handleScroll}
@@ -500,6 +613,16 @@
                     {formatStats(msg.stats)}
                   </div>
                 {/if}
+              </div>
+            </div>
+
+          {:else if msg.role === 'group_event'}
+            <div class="flex justify-center">
+              <div class="px-4 py-1.5 rounded-full text-[11px] font-semibold
+                {msg.eventType === 'start' ? 'bg-indigo-50 border border-indigo-200 text-indigo-700' :
+                 msg.eventType === 'complete' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' :
+                 'bg-gray-100 border border-gray-200 text-gray-600'}">
+                {msg.content}
               </div>
             </div>
 
