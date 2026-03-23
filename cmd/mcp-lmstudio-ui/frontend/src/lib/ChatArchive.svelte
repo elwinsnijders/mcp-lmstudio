@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { ListSessions, LoadChatLog, GetGroup } from '../../wailsjs/go/main/App'
   import { marked } from 'marked'
 
@@ -23,9 +23,16 @@
   let loading = false
   let expanded = {}
   let groupInfo = null
+  let loadedGroupId = null
 
   $: if (selected) {
-    loadChat(selected)
+    const sess = sessions.find(s => s.id === selected)
+    if (loadedGroupId && sess?.groupId === loadedGroupId && groupInfo?.sessionIds?.includes(selected)) {
+      const idx = groupInfo.sessionIds.indexOf(selected)
+      if (idx >= 0) tick().then(() => setTimeout(() => scrollToStep(idx), 50))
+    } else {
+      loadChat(selected)
+    }
   }
 
   onMount(async () => {
@@ -42,17 +49,35 @@
   async function loadChat(id) {
     loading = true
     expanded = {}
+    expandedTools = {}
     groupInfo = null
+    loadedGroupId = null
     try {
-      const result = await LoadChatLog(id)
-      events = result || []
-      messages = collapseEvents(events)
-
       const sess = sessions.find(s => s.id === id)
-      if (sess && sess.groupId) {
-        try {
-          groupInfo = await GetGroup(sess.groupId)
-        } catch (_) {}
+      if (sess?.groupId) {
+        try { groupInfo = await GetGroup(sess.groupId) } catch (_) {}
+      }
+
+      if (groupInfo?.sessionIds?.length > 1) {
+        loadedGroupId = sess.groupId
+        const sw = getStepWord(groupInfo.type)
+        let allMessages = []
+        for (let i = 0; i < groupInfo.sessionIds.length; i++) {
+          allMessages.push({
+            role: 'step_divider', stepIdx: i,
+            content: `${sw} ${i + 1} of ${groupInfo.totalSteps}`
+          })
+          try {
+            const result = await LoadChatLog(groupInfo.sessionIds[i])
+            if (result) allMessages.push(...collapseEvents(result))
+          } catch (_) {}
+        }
+        events = []
+        messages = allMessages
+      } else {
+        const result = await LoadChatLog(id)
+        events = result || []
+        messages = collapseEvents(events)
       }
     } catch (e) {
       console.error('Failed to load chat:', e)
@@ -60,6 +85,14 @@
       messages = []
     } finally {
       loading = false
+    }
+
+    if (groupInfo?.sessionIds) {
+      const stepIdx = groupInfo.sessionIds.indexOf(id)
+      if (stepIdx >= 0) {
+        await tick()
+        setTimeout(() => scrollToStep(stepIdx), 100)
+      }
     }
   }
 
@@ -212,6 +245,23 @@
   }
 
   $: sessionInfo = selected ? getSessionInfo(selected) : null
+
+  function groupTypeColor(type) {
+    if (type === 'queue') return 'indigo'
+    if (type === 'chain') return 'teal'
+    return 'orange'
+  }
+
+  function getStepWord(type) {
+    if (type === 'loop') return 'Iteration'
+    if (type === 'queue') return 'Task'
+    return 'Step'
+  }
+
+  function scrollToStep(idx) {
+    const el = document.getElementById(`archive-step-${idx}`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 </script>
 
 <div class="flex flex-col h-[calc(100vh-4rem)]">
@@ -233,7 +283,7 @@
     </div>
   </div>
 
-  {#if sessionInfo}
+  {#if sessionInfo && !loadedGroupId}
     <div class="mb-3 shrink-0 px-4 py-2.5 bg-slate-50 rounded-lg border border-slate-200 flex items-center gap-6 text-xs text-slate-600">
       <span><strong>Task:</strong> {sessionInfo.task?.slice(0, 100) || '-'}</span>
       <span><strong>Model:</strong> {sessionInfo.model || '-'}</span>
@@ -242,18 +292,33 @@
     </div>
   {/if}
 
-  {#if groupInfo}
+  {#if groupInfo && groupInfo.sessionIds?.length > 1}
     {@const g = groupInfo}
     {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
-    <div class="mb-3 shrink-0 px-4 py-2 bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-xs">
-      <span class="font-bold uppercase tracking-wider {g.type === 'queue' ? 'text-indigo-600' : g.type === 'chain' ? 'text-teal-600' : 'text-orange-600'}">
-        {g.type}
-      </span>
-      <span class="text-gray-500">Step {g.currentStep}/{g.totalSteps}</span>
-      <div class="w-20 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-        <div class="h-full rounded-full {g.status === 'failed' ? 'bg-red-500' : g.status === 'completed' ? 'bg-emerald-500' : 'bg-violet-500'}" style="width: {Math.min(pct, 100)}%"></div>
+    {@const sw = getStepWord(g.type)}
+    <div class="mb-3 shrink-0 px-4 py-2.5 bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-xs">
+      {#if g.type === 'queue'}
+        <span class="font-bold uppercase tracking-wider text-indigo-600">{g.type}</span>
+      {:else if g.type === 'chain'}
+        <span class="font-bold uppercase tracking-wider text-teal-600">{g.type}</span>
+      {:else}
+        <span class="font-bold uppercase tracking-wider text-orange-600">{g.type}</span>
+      {/if}
+      <span class="text-gray-600 font-medium">{g.totalSteps} {sw.toLowerCase()}s</span>
+      <div class="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+        {#if g.status === 'failed'}
+          <div class="h-full rounded-full transition-all duration-300 bg-red-500" style="width: {Math.min(pct, 100)}%"></div>
+        {:else if g.status === 'completed'}
+          <div class="h-full rounded-full transition-all duration-300 bg-emerald-500" style="width: {Math.min(pct, 100)}%"></div>
+        {:else if g.type === 'queue'}
+          <div class="h-full rounded-full transition-all duration-300 bg-indigo-500" style="width: {Math.min(pct, 100)}%"></div>
+        {:else if g.type === 'chain'}
+          <div class="h-full rounded-full transition-all duration-300 bg-teal-500" style="width: {Math.min(pct, 100)}%"></div>
+        {:else}
+          <div class="h-full rounded-full transition-all duration-300 bg-orange-500" style="width: {Math.min(pct, 100)}%"></div>
+        {/if}
       </div>
-      <span class="font-semibold {g.status === 'running' ? 'text-emerald-600' : g.status === 'completed' ? 'text-gray-600' : 'text-red-600'}">
+      <span class="font-semibold {g.status === 'running' ? 'text-emerald-600' : g.status === 'completed' ? 'text-gray-500' : 'text-red-600'}">
         {g.status}
       </span>
       {#if g.chainMode}
@@ -262,9 +327,18 @@
       {#if g.stoppedEarly}
         <span class="text-orange-500 font-medium">stopped early</span>
       {/if}
-      {#if sessionInfo?.groupStep}
-        <span class="ml-auto text-gray-400">This session is step {sessionInfo.groupStep}</span>
-      {/if}
+      <div class="ml-auto flex items-center gap-1">
+        {#each g.sessionIds as sid, idx}
+          <button
+            class="w-6 h-6 rounded text-[10px] font-bold flex items-center justify-center transition-colors
+              {idx < g.currentStep
+                ? (g.type === 'queue' ? 'bg-indigo-600 text-white shadow-sm' : g.type === 'chain' ? 'bg-teal-600 text-white shadow-sm' : 'bg-orange-600 text-white shadow-sm')
+                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}"
+            on:click={() => scrollToStep(idx)}
+            title="{sw} {idx + 1}"
+          >{idx + 1}</button>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -289,6 +363,25 @@
         </div>
       {:else}
         {#each messages as msg, i}
+          {#if msg.role === 'step_divider'}
+            <div id="archive-step-{msg.stepIdx}" class="scroll-mt-4 flex items-center gap-3 py-3 my-1">
+              <div class="flex-1 h-px bg-gray-300"></div>
+              {#if groupInfo?.type === 'queue'}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-indigo-50 border-indigo-200 text-indigo-700">
+                  {msg.content}
+                </div>
+              {:else if groupInfo?.type === 'chain'}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-teal-50 border-teal-200 text-teal-700">
+                  {msg.content}
+                </div>
+              {:else}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-orange-50 border-orange-200 text-orange-700">
+                  {msg.content}
+                </div>
+              {/if}
+              <div class="flex-1 h-px bg-gray-300"></div>
+            </div>
+          {:else}
           <div class="group">
             <div class="flex items-center gap-2 mb-1.5">
               <span class="text-[10px] font-semibold uppercase tracking-wider
@@ -406,6 +499,7 @@
               </div>
             {/if}
           </div>
+          {/if}
         {/each}
       {/if}
     </div>

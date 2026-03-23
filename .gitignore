@@ -39,6 +39,8 @@ cmd/mcp-lmstudio-ui/frontend/dist/
 # Logs
 lmstudio_audit.log
 agent_audit.log
+ui-debug.log
+groupwatcher.log
 
 # Python files (keeping for backward compatibility)
 __pycache__/

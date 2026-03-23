@@ -95,6 +95,8 @@ export namespace main {
 	    server_url?: string;
 	    allowed_tools?: string[];
 	    headers?: Record<string, string>;
+	    command?: string[];
+	    env?: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new IntegrationDTO(source);
@@ -110,6 +112,8 @@ export namespace main {
 	        this.server_url = source["server_url"];
 	        this.allowed_tools = source["allowed_tools"];
 	        this.headers = source["headers"];
+	        this.command = source["command"];
+	        this.env = source["env"];
 	    }
 	}
 	export class ProfileDTO {
@@ -182,8 +186,6 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
 	export class GroupDTO {
 	    id: string;
 	    type: string;
@@ -218,6 +220,8 @@ export namespace main {
 	        this.updatedAt = source["updatedAt"];
 	    }
 	}
+	
+	
 	export class SessionDTO {
 	    id: string;
 	    task: string;
@@ -229,6 +233,7 @@ export namespace main {
 	    tokensPercent: number;
 	    exchanges: number;
 	    integrationKeys: string[];
+	    project?: string;
 	    groupId?: string;
 	    groupStep?: number;
 	    createdAt: string;
@@ -251,6 +256,7 @@ export namespace main {
 	        this.tokensPercent = source["tokensPercent"];
 	        this.exchanges = source["exchanges"];
 	        this.integrationKeys = source["integrationKeys"];
+	        this.project = source["project"];
 	        this.groupId = source["groupId"];
 	        this.groupStep = source["groupStep"];
 	        this.createdAt = source["createdAt"];

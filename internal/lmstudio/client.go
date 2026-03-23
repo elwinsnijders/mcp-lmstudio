@@ -287,6 +287,246 @@ func (c *Client) parseSSEStream(body io.Reader, cb StreamCallbacks) (*ChatRespon
 	return finalResponse, nil
 }
 
+// Responses sends a non-streaming request to /v1/responses.
+func (c *Client) Responses(ctx context.Context, req *ResponsesRequest) (*ResponsesResponse, error) {
+	req.Stream = false
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/responses", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to LM Studio: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("LM Studio returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result ResponsesResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+
+	return &result, nil
+}
+
+type ResponsesStreamCallbacks struct {
+	OnTextDelta      func(delta string)
+	OnTextDone       func(text string)
+	OnFunctionCall   func(callID, name, arguments string)
+	OnReasoningDelta func(delta string)
+	OnCompleted      func(response *ResponsesResponse)
+	OnError          func(message string)
+}
+
+// ResponsesStream sends a streaming request to /v1/responses and parses SSE events.
+func (c *Client) ResponsesStream(ctx context.Context, req *ResponsesRequest, cb ResponsesStreamCallbacks) (*ResponsesResponse, error) {
+	req.Stream = true
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/responses", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to LM Studio: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("LM Studio returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		respBody, _ := io.ReadAll(resp.Body)
+		var result ResponsesResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("parsing non-SSE response: %w", err)
+		}
+		return &result, nil
+	}
+
+	return c.parseResponsesSSE(resp.Body, cb)
+}
+
+func (c *Client) parseResponsesSSE(body io.Reader, cb ResponsesStreamCallbacks) (*ResponsesResponse, error) {
+	var finalResponse *ResponsesResponse
+	var accumulated strings.Builder
+
+	// Track function call metadata from output_item.added events
+	type pendingFC struct {
+		CallID string
+		Name   string
+		Args   strings.Builder
+	}
+	pendingCalls := make(map[string]*pendingFC)
+
+	const maxBuf = 1024 * 1024
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, maxBuf), maxBuf)
+
+	var currentEvent string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		switch currentEvent {
+
+		case "response.output_item.added":
+			var ev struct {
+				Item struct {
+					ID     string `json:"id"`
+					Type   string `json:"type"`
+					CallID string `json:"call_id"`
+					Name   string `json:"name"`
+				} `json:"item"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil && ev.Item.Type == "function_call" {
+				pendingCalls[ev.Item.ID] = &pendingFC{
+					CallID: ev.Item.CallID,
+					Name:   ev.Item.Name,
+				}
+			}
+
+		case "response.output_text.delta":
+			var ev struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil && ev.Delta != "" {
+				accumulated.WriteString(ev.Delta)
+				if cb.OnTextDelta != nil {
+					cb.OnTextDelta(ev.Delta)
+				}
+			}
+
+		case "response.output_text.done":
+			var ev struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil {
+				if cb.OnTextDone != nil {
+					cb.OnTextDone(ev.Text)
+				}
+			}
+
+		case "response.function_call_arguments.delta":
+			var ev struct {
+				ItemID string `json:"item_id"`
+				Delta  string `json:"delta"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil {
+				if pc, ok := pendingCalls[ev.ItemID]; ok {
+					pc.Args.WriteString(ev.Delta)
+				}
+			}
+
+		case "response.function_call_arguments.done":
+			var ev struct {
+				ItemID    string `json:"item_id"`
+				Arguments string `json:"arguments"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil {
+				if pc, ok := pendingCalls[ev.ItemID]; ok {
+					if cb.OnFunctionCall != nil {
+						cb.OnFunctionCall(pc.CallID, pc.Name, ev.Arguments)
+					}
+					delete(pendingCalls, ev.ItemID)
+				}
+			}
+
+		case "response.reasoning_summary_text.delta":
+			var ev struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil && ev.Delta != "" {
+				if cb.OnReasoningDelta != nil {
+					cb.OnReasoningDelta(ev.Delta)
+				}
+			}
+
+		case "response.completed":
+			var ev struct {
+				Response ResponsesResponse `json:"response"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil {
+				finalResponse = &ev.Response
+				if cb.OnCompleted != nil {
+					cb.OnCompleted(finalResponse)
+				}
+			}
+
+		case "error":
+			var ev struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal([]byte(data), &ev) == nil {
+				if cb.OnError != nil {
+					cb.OnError(ev.Message)
+				}
+			}
+		}
+
+		currentEvent = ""
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading stream: %w", err)
+	}
+
+	if finalResponse == nil {
+		finalResponse = &ResponsesResponse{
+			Output: []ResponsesOutput{{
+				Type:    "message",
+				Content: json.RawMessage(fmt.Sprintf(`[{"type":"output_text","text":%s}]`, mustJSON(accumulated.String()))),
+			}},
+		}
+	}
+
+	return finalResponse, nil
+}
+
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func (c *Client) ListModels(ctx context.Context) (*ModelsResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/api/v1/models", nil)
 	if err != nil {

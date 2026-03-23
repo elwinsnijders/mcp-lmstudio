@@ -62,6 +62,10 @@ func (m *Manager) Get(id string) (*Session, error) {
 	return sess, nil
 }
 
+func (m *Manager) Save(sess *Session) error {
+	return m.store.Put(sess)
+}
+
 func (m *Manager) AddTokens(id string, inputTokens, outputTokens int, responseID string) (*Session, *TokenUsage, error) {
 	sess, ok := m.store.Get(id)
 	if !ok {

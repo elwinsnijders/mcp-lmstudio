@@ -92,6 +92,9 @@ func (m *Manager) ResolveIntegrations(keys []string) ([]interface{}, error) {
 				AllowedTools: ic.AllowedTools,
 				Headers:      ic.Headers,
 			})
+		case "function":
+			// Handled by mcpclient.Pool, not passed to LM Studio integrations
+			continue
 		default:
 			return nil, fmt.Errorf("integration %q has unknown type %q", key, ic.Type)
 		}

@@ -57,12 +57,14 @@ type ProfileConfig struct {
 type IntegrationConfig struct {
 	Label        string            `json:"label"`
 	Description  string            `json:"description"`
-	Type         string            `json:"type"` // "plugin" or "ephemeral_mcp"
+	Type         string            `json:"type"` // "plugin", "ephemeral_mcp", or "function"
 	ID           string            `json:"id,omitempty"`
 	ServerLabel  string            `json:"server_label,omitempty"`
 	ServerURL    string            `json:"server_url,omitempty"`
 	AllowedTools []string          `json:"allowed_tools,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
+	Command      []string          `json:"command,omitempty"` // MCP server command + args for client-side execution
+	Env          map[string]string `json:"env,omitempty"`     // environment variables for the MCP server process
 }
 
 func Load() (*Config, error) {

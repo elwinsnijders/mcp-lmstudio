@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte'
-  import { GetActiveSessions, ListSessions, LoadChatLog, StartChatWatch, StopChatWatch, GetGroup } from '../../wailsjs/go/main/App'
+  import { GetActiveSessions, ListSessions, LoadChatLog, StartChatWatch, StopChatWatch, StopGroupWatch, StartGroupWatch, GetGroup } from '../../wailsjs/go/main/App'
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
   import { marked } from 'marked'
 
@@ -38,9 +38,7 @@
   const BASE_CHARS = 2
   const CATCHUP_DIVISOR = 8
 
-  /** Safety cap for tool args/output in UI (full data is in artifacts / tail chatlog). */
   const TOOL_PREVIEW = 8192
-  /** Cap very large assistant bubbles from old logs before markdown. */
   const ASSISTANT_PREVIEW = 128000
 
   function capPreview(s, max = TOOL_PREVIEW) {
@@ -49,9 +47,113 @@
   }
 
   let groupInfo = null
-  let groupPollTimer = null
+  let groupMode = false
+  let groupProject = ''
+  let _loadGen = 0
+  let _loading = false
 
   let loadDebounceTimer = null
+
+  function getStepWord(type) {
+    if (type === 'loop') return 'Iteration'
+    if (type === 'queue') return 'Task'
+    return 'Step'
+  }
+
+  function scrollToStep(idx) {
+    const el = document.getElementById(`live-step-${idx}`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  function parseEventsToMessages(events) {
+    let msgs = []
+    let pendingAI = ''
+    let pendingReasoning = ''
+
+    for (const ev of events) {
+      switch (ev.type) {
+        case 'user_message':
+          if (pendingAI.trim()) msgs.push(mkAssistant(pendingAI.trim(), null))
+          pendingAI = ''
+          pendingReasoning = ''
+          msgs.push({ role: 'user', content: ev.content })
+          break
+        case 'reasoning_start':
+          if (pendingAI.trim()) msgs.push(mkAssistant(pendingAI.trim(), null))
+          pendingAI = ''
+          pendingReasoning = ''
+          break
+        case 'reasoning_delta':
+          pendingReasoning += ev.content || ''
+          break
+        case 'reasoning_end':
+          if (pendingReasoning) {
+            msgs.push({ role: 'reasoning', content: pendingReasoning })
+            pendingReasoning = ''
+          }
+          break
+        case 'ai_delta':
+          pendingAI += ev.content
+          break
+        case 'ai_complete': {
+          let c = ev.content || pendingAI
+          if (c && c.length > ASSISTANT_PREVIEW) c = c.slice(0, ASSISTANT_PREVIEW) + '\n... (truncated)'
+          msgs.push(mkAssistant(c, ev.stats))
+          pendingAI = ''
+          break
+        }
+        case 'error':
+          msgs.push({ role: 'error', content: ev.content })
+          pendingAI = ''
+          break
+        case 'tool_use':
+          if (pendingAI.trim()) msgs.push(mkAssistant(pendingAI.trim(), null))
+          pendingAI = ''
+          msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
+          break
+        case 'tool_call_start':
+          if (pendingAI.trim()) msgs.push(mkAssistant(pendingAI.trim(), null))
+          pendingAI = ''
+          msgs.push({ role: 'tool_start', tool: ev.tool })
+          break
+        case 'tool_call_result':
+          msgs.push({
+            role: 'tool_result',
+            tool: ev.tool,
+            arguments: capPreview(ev.arguments, TOOL_PREVIEW),
+            output: capPreview(ev.output, TOOL_PREVIEW),
+            success: ev.success,
+            reason: ev.reason
+          })
+          break
+        case 'status':
+          break
+        case 'group_start':
+          msgs.push({
+            role: 'group_event', eventType: 'start',
+            groupType: ev.group_type, groupTotal: ev.group_total, groupId: ev.group_id,
+            content: `${(ev.group_type || 'group').toUpperCase()} started — ${ev.group_total} steps`
+          })
+          break
+        case 'group_step':
+          msgs.push({
+            role: 'group_event', eventType: 'step',
+            groupStep: ev.group_step, groupTotal: ev.group_total, groupId: ev.group_id,
+            content: `Step ${ev.group_step}/${ev.group_total}`
+          })
+          break
+        case 'group_complete':
+          msgs.push({
+            role: 'group_event', eventType: 'complete',
+            groupType: ev.group_type,
+            content: ev.content || `${(ev.group_type || 'group').toUpperCase()} complete`
+          })
+          break
+      }
+    }
+
+    return { msgs, pendingAI, pendingReasoning }
+  }
 
   function startTypewriter() {
     if (_typeTimer) return
@@ -100,16 +202,20 @@
 
   onMount(async () => {
     await refreshSessions()
-    refreshInterval = setInterval(refreshSessions, 5000)
+    refreshInterval = setInterval(refreshSessions, 1000)
     EventsOn('chat:event', onChatEvent)
+    EventsOn('group:step', onGroupStep)
+    EventsOn('group:done', onGroupDone)
   })
 
   onDestroy(() => {
     EventsOff('chat:event')
+    EventsOff('group:step')
+    EventsOff('group:done')
     StopChatWatch().catch(() => {})
+    StopGroupWatch().catch(() => {})
     if (refreshInterval) clearInterval(refreshInterval)
     if (loadDebounceTimer) clearTimeout(loadDebounceTimer)
-    if (groupPollTimer) clearInterval(groupPollTimer)
     stopTypewriter()
   })
 
@@ -123,9 +229,11 @@
         if (s.status === 'active') map[s.id] = s
       }
       activeSessionMap = map
-      if (activeSessions.length > 0) {
+      const isGroupRunning = groupMode && groupInfo && groupInfo.status === 'running'
+      if (activeSessions.length > 0 && !isGroupRunning && !_loading) {
         const newest = activeSessions[0]
-        if (!selectedSession || !prev.has(newest)) {
+        const currentStillActive = selectedSession && activeSessions.includes(selectedSession)
+        if (!selectedSession || !currentStillActive || !prev.has(newest)) {
           selectedSession = newest
         }
       }
@@ -133,13 +241,138 @@
   }
 
   async function loadSession(sessionId) {
-    const loadId = sessionId
+    const gen = ++_loadGen
+    _loading = true
     try {
-      await StopChatWatch()
-    } catch (_) {}
+      try { await StopChatWatch() } catch (_) {}
+      try { await StopGroupWatch() } catch (_) {}
 
-    stopTypewriter()
-    messages = []
+      stopTypewriter()
+      messages = []
+      _rawStream = ''
+      _rawReasoning = ''
+      _streamPos = 0
+      _reasonPos = 0
+      streamBuffer = ''
+      reasoningBuffer = ''
+      isReasoning = false
+      statusPhase = ''
+      statusProgress = 0
+      groupInfo = null
+      groupMode = false
+      groupProject = ''
+
+      const stale = () => gen !== _loadGen
+
+      try {
+        const allSessions = await ListSessions()
+        if (stale()) return
+        const sess = (allSessions || []).find(s => s.id === sessionId)
+
+        if (sess?.groupId) {
+          groupMode = true
+          try {
+            const g = await GetGroup(sess.groupId)
+            if (stale()) return
+            if (g) groupInfo = g
+          } catch (_) {}
+          groupProject = sess.project || ''
+
+          if (groupInfo?.sessionIds?.length > 0) {
+            const sw = getStepWord(groupInfo.type)
+            let accumulated = []
+
+            for (let i = 0; i < groupInfo.sessionIds.length; i++) {
+              const sid = groupInfo.sessionIds[i]
+              const isLast = i === groupInfo.sessionIds.length - 1
+
+              accumulated.push({
+                role: 'step_divider', stepIdx: i,
+                content: `${sw} ${i + 1} of ${groupInfo.totalSteps}`
+              })
+
+              try {
+                const evts = await LoadChatLog(sid)
+                if (stale()) return
+                if (evts) {
+                  const { msgs, pendingAI, pendingReasoning } = parseEventsToMessages(evts)
+
+                  if (isLast) {
+                    if (pendingReasoning) {
+                      _rawReasoning = pendingReasoning
+                      _reasonPos = pendingReasoning.length
+                      reasoningBuffer = pendingReasoning
+                      isReasoning = true
+                    }
+                    if (pendingAI) {
+                      _rawStream = pendingAI
+                      _streamPos = pendingAI.length
+                      streamBuffer = pendingAI
+                    }
+                    accumulated.push(...msgs)
+                  } else {
+                    accumulated.push(...msgs)
+                    if (pendingReasoning) accumulated.push({ role: 'reasoning', content: pendingReasoning })
+                    if (pendingAI.trim()) accumulated.push(mkAssistant(pendingAI.trim(), null))
+                  }
+                }
+              } catch (_) {}
+            }
+
+            if (stale()) return
+            messages = accumulated
+            StartGroupWatch(sess.groupId, groupInfo.sessionIds.length)
+            await scrollToBottom()
+            return
+          }
+        }
+      } catch (_) {}
+
+      if (stale()) return
+
+      try {
+        const events = await LoadChatLog(sessionId)
+        if (stale()) return
+        if (events) {
+          const { msgs, pendingAI, pendingReasoning } = parseEventsToMessages(events)
+          if (pendingReasoning) {
+            _rawReasoning = pendingReasoning
+            _reasonPos = pendingReasoning.length
+            reasoningBuffer = pendingReasoning
+            isReasoning = true
+          }
+          if (pendingAI) {
+            _rawStream = pendingAI
+            _streamPos = pendingAI.length
+            streamBuffer = pendingAI
+          }
+          messages = msgs
+        }
+      } catch (_) {}
+
+      if (stale()) return
+      StartChatWatch(sessionId)
+      await scrollToBottom()
+    } finally {
+      if (gen === _loadGen) _loading = false
+    }
+  }
+
+  function onGroupStep(event) {
+    if (!groupMode) return
+
+    flushBuffers()
+
+    const sw = getStepWord(event.type || groupInfo?.type)
+    messages = [...messages, {
+      role: 'step_divider', stepIdx: event.stepIdx,
+      content: `${sw} ${event.stepIdx + 1} of ${event.totalSteps}`
+    }]
+
+    if (event.groupInfo) {
+      groupInfo = { ...event.groupInfo }
+    }
+
     _rawStream = ''
     _rawReasoning = ''
     _streamPos = 0
@@ -148,153 +381,17 @@
     reasoningBuffer = ''
     isReasoning = false
     statusPhase = ''
-    statusProgress = 0
-    groupInfo = null
-    if (groupPollTimer) { clearInterval(groupPollTimer); groupPollTimer = null }
 
-    try {
-      const allSessions = await ListSessions()
-      const sess = (allSessions || []).find(s => s.id === sessionId)
-      if (sess && sess.groupId) {
-        await loadGroupInfo(sess.groupId)
-        groupPollTimer = setInterval(() => loadGroupInfo(sess.groupId), 3000)
-      }
-    } catch (_) {}
-
-    try {
-      const events = await LoadChatLog(sessionId)
-      if (loadId !== selectedSession) return
-      if (events) {
-        processHistoricEvents(events)
-      }
-    } catch (_) {}
-
-    if (loadId !== selectedSession) return
-    StartChatWatch(sessionId)
-    await scrollToBottom()
+    if (autoScroll) scrollToBottom()
   }
 
-  async function loadGroupInfo(groupId) {
-    try {
-      const g = await GetGroup(groupId)
-      if (g) groupInfo = g
-    } catch (_) {}
-  }
-
-  function switchGroupSession(sessionId) {
-    selectedSession = sessionId
-  }
-
-  function processHistoricEvents(events) {
-    let msgs = []
-    let pendingAI = ''
-    let pendingReasoning = ''
-
-    for (const ev of events) {
-      switch (ev.type) {
-        case 'user_message':
-          if (pendingAI.trim()) {
-            msgs.push(mkAssistant(pendingAI.trim(), null))
-          }
-          pendingAI = ''
-          pendingReasoning = ''
-          msgs.push({ role: 'user', content: ev.content })
-          break
-        case 'reasoning_start':
-          if (pendingAI.trim()) {
-            msgs.push(mkAssistant(pendingAI.trim(), null))
-          }
-          pendingAI = ''
-          pendingReasoning = ''
-          break
-        case 'reasoning_delta':
-          pendingReasoning += ev.content || ''
-          break
-        case 'reasoning_end':
-          if (pendingReasoning) {
-            msgs.push({ role: 'reasoning', content: pendingReasoning })
-            pendingReasoning = ''
-          }
-          break
-        case 'ai_delta':
-          pendingAI += ev.content
-          break
-        case 'ai_complete': {
-          let c = ev.content || pendingAI
-          if (c && c.length > ASSISTANT_PREVIEW) {
-            c = c.slice(0, ASSISTANT_PREVIEW) + '\n... (truncated)'
-          }
-          msgs.push(mkAssistant(c, ev.stats))
-          pendingAI = ''
-          break
-        }
-        case 'error':
-          msgs.push({ role: 'error', content: ev.content })
-          pendingAI = ''
-          break
-        case 'tool_use':
-          if (pendingAI.trim()) {
-            msgs.push(mkAssistant(pendingAI.trim(), null))
-          }
-          pendingAI = ''
-          msgs.push({ role: 'tool', content: ev.content, tool: ev.tool })
-          break
-        case 'tool_call_start':
-          if (pendingAI.trim()) {
-            msgs.push(mkAssistant(pendingAI.trim(), null))
-          }
-          pendingAI = ''
-          msgs.push({ role: 'tool_start', tool: ev.tool })
-          break
-        case 'tool_call_result':
-          msgs.push({
-            role: 'tool_result',
-            tool: ev.tool,
-            arguments: capPreview(ev.arguments, TOOL_PREVIEW),
-            output: capPreview(ev.output, TOOL_PREVIEW),
-            success: ev.success,
-            reason: ev.reason
-          })
-          break
-        case 'status':
-          break
-        case 'group_start':
-          msgs.push({
-            role: 'group_event', eventType: 'start',
-            groupType: ev.group_type, groupTotal: ev.group_total, groupId: ev.group_id,
-            content: `${(ev.group_type || 'group').toUpperCase()} started — ${ev.group_total} steps`
-          })
-          break
-        case 'group_step':
-          msgs.push({
-            role: 'group_event', eventType: 'step',
-            groupStep: ev.group_step, groupTotal: ev.group_total, groupId: ev.group_id,
-            content: `Step ${ev.group_step}/${ev.group_total}`
-          })
-          break
-        case 'group_complete':
-          msgs.push({
-            role: 'group_event', eventType: 'complete',
-            groupType: ev.group_type,
-            content: ev.content || `${(ev.group_type || 'group').toUpperCase()} complete`
-          })
-          break
-      }
+  function onGroupDone(event) {
+    if (!groupMode) return
+    flushBuffers()
+    if (event.groupInfo) {
+      groupInfo = { ...event.groupInfo }
     }
-
-    if (pendingReasoning) {
-      _rawReasoning = pendingReasoning
-      _reasonPos = pendingReasoning.length
-      reasoningBuffer = pendingReasoning
-      isReasoning = true
-    }
-    if (pendingAI) {
-      _rawStream = pendingAI
-      _streamPos = pendingAI.length
-      streamBuffer = pendingAI
-    }
-
-    messages = msgs
+    if (autoScroll) scrollToBottom()
   }
 
   async function onChatEvent(event) {
@@ -387,37 +484,6 @@
         break
       }
 
-      case 'group_start':
-        messages = [...messages, {
-          role: 'group_event',
-          eventType: 'start',
-          groupType: event.group_type,
-          groupTotal: event.group_total,
-          groupId: event.group_id,
-          content: `${(event.group_type || 'group').toUpperCase()} started — ${event.group_total} steps`
-        }]
-        if (event.group_id) loadGroupInfo(event.group_id)
-        break
-      case 'group_step':
-        messages = [...messages, {
-          role: 'group_event',
-          eventType: 'step',
-          groupStep: event.group_step,
-          groupTotal: event.group_total,
-          groupId: event.group_id,
-          content: `Step ${event.group_step}/${event.group_total}`
-        }]
-        if (event.group_id) loadGroupInfo(event.group_id)
-        break
-      case 'group_complete':
-        messages = [...messages, {
-          role: 'group_event',
-          eventType: 'complete',
-          groupType: event.group_type,
-          content: event.content || `${(event.group_type || 'group').toUpperCase()} complete`
-        }]
-        if (event.group_id) loadGroupInfo(event.group_id)
-        break
     }
 
     if (autoScroll) {
@@ -524,30 +590,79 @@
     {#if groupInfo}
       {@const g = groupInfo}
       {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
-      <div class="px-4 py-2 bg-gray-50 border-b border-gray-200 flex items-center gap-3 text-xs shrink-0">
-        <span class="font-bold uppercase tracking-wider {g.type === 'queue' ? 'text-indigo-600' : g.type === 'chain' ? 'text-teal-600' : 'text-orange-600'}">
-          {g.type}
-        </span>
-        <span class="text-gray-500">Step {g.currentStep}/{g.totalSteps}</span>
-        <div class="w-24 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-          <div class="h-full rounded-full transition-all {g.status === 'failed' ? 'bg-red-500' : g.status === 'completed' ? 'bg-emerald-500' : 'bg-violet-500'}" style="width: {Math.min(pct, 100)}%"></div>
+      {@const isRunning = g.status === 'running'}
+      {@const sw = getStepWord(g.type)}
+      {@const isDone = g.status === 'completed' || g.status === 'failed'}
+      <div class="px-4 py-2.5 border-b shrink-0 flex items-center gap-3 text-xs
+        {isRunning ? 'bg-emerald-50 border-emerald-200' : isDone ? 'bg-slate-50 border-slate-200' : 'bg-gray-50 border-gray-200'}">
+        {#if g.type === 'queue'}
+          <span class="font-bold uppercase tracking-wider text-indigo-600 flex items-center gap-1.5">
+            {#if isRunning}<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>{/if}
+            {g.type}
+          </span>
+        {:else if g.type === 'chain'}
+          <span class="font-bold uppercase tracking-wider text-teal-600 flex items-center gap-1.5">
+            {#if isRunning}<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>{/if}
+            {g.type}
+          </span>
+        {:else}
+          <span class="font-bold uppercase tracking-wider text-orange-600 flex items-center gap-1.5">
+            {#if isRunning}<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>{/if}
+            {g.type}
+          </span>
+        {/if}
+        {#if groupProject}
+          <span class="text-gray-400 font-medium">{groupProject}</span>
+          <span class="text-gray-300">|</span>
+        {/if}
+        <span class="text-gray-600 font-medium">{sw} {g.currentStep} of {g.totalSteps}</span>
+        <div class="w-28 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          {#if g.status === 'failed'}
+            <div class="h-full rounded-full transition-all duration-500 bg-red-500" style="width: {Math.min(pct, 100)}%"></div>
+          {:else if g.status === 'completed'}
+            <div class="h-full rounded-full transition-all duration-500 bg-emerald-500" style="width: {Math.min(pct, 100)}%"></div>
+          {:else if g.type === 'queue'}
+            <div class="h-full rounded-full transition-all duration-500 bg-indigo-500" style="width: {Math.min(pct, 100)}%"></div>
+          {:else if g.type === 'chain'}
+            <div class="h-full rounded-full transition-all duration-500 bg-teal-500" style="width: {Math.min(pct, 100)}%"></div>
+          {:else}
+            <div class="h-full rounded-full transition-all duration-500 bg-orange-500" style="width: {Math.min(pct, 100)}%"></div>
+          {/if}
         </div>
-        <span class="font-semibold {g.status === 'running' ? 'text-emerald-600' : g.status === 'completed' ? 'text-gray-600' : 'text-red-600'}">
-          {g.status}
-        </span>
+        {#if isRunning}
+          <span class="font-semibold text-emerald-600 flex items-center gap-1">
+            <svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+            Running
+          </span>
+        {:else if g.status === 'completed'}
+          <span class="font-semibold text-emerald-600 flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+            Done
+          </span>
+        {:else if g.status === 'failed'}
+          <span class="font-semibold text-red-600 flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            Failed
+          </span>
+        {/if}
         {#if g.chainMode}
           <span class="text-gray-400">mode: {g.chainMode}</span>
         {/if}
         {#if g.stoppedEarly}
           <span class="text-orange-500 font-medium">stopped early</span>
         {/if}
-        {#if g.sessionIds && g.sessionIds.length > 1}
+        {#if g.sessionIds && g.sessionIds.length > 0}
           <span class="ml-auto flex items-center gap-1">
             {#each g.sessionIds as sid, idx}
+              {@const isCurrent = idx === g.currentStep - 1 && isRunning}
               <button
-                class="px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors {sid === selectedSession ? 'bg-violet-600 text-white' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}"
-                on:click={() => switchGroupSession(sid)}
-                title="Step {idx + 1}: {sid}"
+                class="w-6 h-6 rounded text-[10px] font-bold transition-all flex items-center justify-center
+                  {idx < g.currentStep
+                    ? (g.type === 'queue' ? 'bg-indigo-600 text-white shadow-sm' : g.type === 'chain' ? 'bg-teal-600 text-white shadow-sm' : 'bg-orange-600 text-white shadow-sm')
+                    : 'bg-gray-200 text-gray-500 hover:bg-gray-300'}
+                  {isCurrent ? 'animate-pulse' : ''}"
+                on:click={() => scrollToStep(idx)}
+                title="{sw} {idx + 1}"
               >{idx + 1}</button>
             {/each}
           </span>
@@ -584,7 +699,26 @@
         </div>
       {:else}
         {#each messages as msg, i}
-          {#if msg.role === 'user'}
+          {#if msg.role === 'step_divider'}
+            <div id="live-step-{msg.stepIdx}" class="scroll-mt-4 flex items-center gap-3 py-3 my-1">
+              <div class="flex-1 h-px bg-gray-300"></div>
+              {#if groupInfo?.type === 'queue'}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-indigo-50 border-indigo-200 text-indigo-700">
+                  {msg.content}
+                </div>
+              {:else if groupInfo?.type === 'chain'}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-teal-50 border-teal-200 text-teal-700">
+                  {msg.content}
+                </div>
+              {:else}
+                <div class="px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider border bg-orange-50 border-orange-200 text-orange-700">
+                  {msg.content}
+                </div>
+              {/if}
+              <div class="flex-1 h-px bg-gray-300"></div>
+            </div>
+
+          {:else if msg.role === 'user'}
             <div class="flex justify-end">
               <div class="max-w-[80%]">
                 <div class="text-[10px] font-semibold uppercase tracking-wider text-violet-400 text-right mb-1">User</div>
@@ -701,7 +835,6 @@
           {/if}
         {/each}
 
-        <!-- Live status indicator -->
         {#if statusPhase}
           <div class="flex justify-center">
             <div class="px-4 py-2 rounded-lg bg-indigo-50 border border-indigo-100 text-indigo-600 text-xs flex items-center gap-2">
@@ -716,7 +849,6 @@
           </div>
         {/if}
 
-        <!-- Live reasoning stream -->
         {#if isReasoning && reasoningBuffer}
           <div class="flex justify-start">
             <div class="max-w-[85%]">
@@ -732,7 +864,6 @@
           </div>
         {/if}
 
-        <!-- Live message stream (plain text for smooth flow, markdown on complete) -->
         {#if streamBuffer}
           <div class="flex justify-start">
             <div class="max-w-[80%]">

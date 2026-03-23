@@ -27,4 +27,8 @@ export function SetDataDir(arg1:string):Promise<void>;
 
 export function StartChatWatch(arg1:string):Promise<void>;
 
+export function StartGroupWatch(arg1:string,arg2:number):Promise<void>;
+
 export function StopChatWatch():Promise<void>;
+
+export function StopGroupWatch():Promise<void>;

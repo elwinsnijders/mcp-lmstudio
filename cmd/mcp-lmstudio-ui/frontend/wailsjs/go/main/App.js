@@ -50,6 +50,14 @@ export function StartChatWatch(arg1) {
   return window['go']['main']['App']['StartChatWatch'](arg1);
 }
 
+export function StartGroupWatch(arg1, arg2) {
+  return window['go']['main']['App']['StartGroupWatch'](arg1, arg2);
+}
+
 export function StopChatWatch() {
   return window['go']['main']['App']['StopChatWatch']();
+}
+
+export function StopGroupWatch() {
+  return window['go']['main']['App']['StopGroupWatch']();
 }

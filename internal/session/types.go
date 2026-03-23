@@ -23,6 +23,7 @@ type Session struct {
 	Project          string    `json:"project,omitempty"`
 	GroupID          string    `json:"group_id,omitempty"`
 	GroupStep        int       `json:"group_step,omitempty"`
+	UsesToolProxy    bool      `json:"uses_tool_proxy,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	LastActiveAt     time.Time `json:"last_active_at"`
 }

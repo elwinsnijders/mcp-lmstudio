@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/infinitimeless/lmstudio-mcp/internal/chatlog"
 	"github.com/infinitimeless/lmstudio-mcp/internal/config"
 	"github.com/infinitimeless/lmstudio-mcp/internal/lmstudio"
+	"github.com/infinitimeless/lmstudio-mcp/internal/mcpclient"
 	"github.com/infinitimeless/lmstudio-mcp/internal/profile"
 	"github.com/infinitimeless/lmstudio-mcp/internal/progress"
 	"github.com/infinitimeless/lmstudio-mcp/internal/session"
@@ -36,6 +38,8 @@ type StartTaskArgs struct {
 	Integrations  []string `json:"integrations,omitempty" jsonschema:"Integration keys to enable (e.g. filesystem or playwright)"`
 	SystemPrompt  string   `json:"system_prompt,omitempty" jsonschema:"Override profile system prompt (shared prompt still applies)"`
 	Project       string   `json:"project,omitempty" jsonschema:"Project name to tag this session with for grouping related tasks"`
+	GroupID       string
+	GroupStep     int
 }
 
 type ContinueTaskArgs struct {
@@ -163,6 +167,32 @@ func main() {
 		logger.Printf("Warning: task group store disabled: %v", err)
 	}
 
+	mcpPool := mcpclient.NewPool(logger)
+	functionIntegrationSet := make(map[string]bool)
+	for name, ic := range cfg.App.Integrations {
+		if ic.Type == "function" && len(ic.Command) > 0 {
+			mcpPool.Register(name, ic.Command, ic.Env)
+			if err := mcpPool.Connect(name); err != nil {
+				logger.Printf("Warning: failed to connect MCP server %q: %v", name, err)
+			} else {
+				functionIntegrationSet[name] = true
+			}
+		}
+	}
+	if len(functionIntegrationSet) > 0 {
+		logger.Printf("Connected %d function integration(s): %v", len(functionIntegrationSet), mcpPool.ConnectedServers())
+	}
+	defer mcpPool.Close()
+
+	hasFunctionIntegrations := func(keys []string) bool {
+		for _, k := range keys {
+			if functionIntegrationSet[k] {
+				return true
+			}
+		}
+		return false
+	}
+
 	resolveSessionIntegrations := func(sess *session.Session) []interface{} {
 		if len(sess.IntegrationKeys) == 0 {
 			return nil
@@ -183,7 +213,9 @@ func main() {
 		artStore:                   artStore,
 		groups:                     groupStore,
 		logger:                     logger,
+		mcpPool:                    mcpPool,
 		resolveSessionIntegrations: resolveSessionIntegrations,
+		hasFunctionIntegrations:    hasFunctionIntegrations,
 	}
 
 	server := mcp.NewServer(
@@ -387,13 +419,15 @@ func main() {
 					Integrations:  item.Integrations,
 					SystemPrompt:  item.SystemPrompt,
 					Project:       itemProject,
+					GroupID:       grpID(grp),
+					GroupStep:     step,
 				})
 			}
 
 			if r.SessionID != "" && grp != nil {
-				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
-				tc.groups.Update(grp)
-				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+				if latest, ok := tc.groups.Get(grp.ID); ok {
+					grp = latest
+				}
 			}
 
 			if chatWriter != nil && r.SessionID != "" {
@@ -556,13 +590,15 @@ func main() {
 					Integrations:  item.Integrations,
 					SystemPrompt:  item.SystemPrompt,
 					Project:       itemProject,
+					GroupID:       grpID(grp),
+					GroupStep:     step,
 				})
 			}
 
 			if r.SessionID != "" && grp != nil {
-				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
-				tc.groups.Update(grp)
-				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+				if latest, ok := tc.groups.Get(grp.ID); ok {
+					grp = latest
+				}
 			}
 
 			if chatWriter != nil && r.SessionID != "" {
@@ -691,12 +727,14 @@ func main() {
 				Integrations:  args.Integrations,
 				SystemPrompt:  args.SystemPrompt,
 				Project:       args.Project,
+				GroupID:       grpID(grp),
+				GroupStep:     step,
 			})
 
 			if r.SessionID != "" && grp != nil {
-				grp.SessionIDs = append(grp.SessionIDs, r.SessionID)
-				tc.groups.Update(grp)
-				tc.sessions.SetGroup(r.SessionID, grp.ID, step)
+				if latest, ok := tc.groups.Get(grp.ID); ok {
+					grp = latest
+				}
 			}
 
 			if chatWriter != nil && r.SessionID != "" {
@@ -788,26 +826,50 @@ func main() {
 			return errResult(fmt.Sprintf("Error: %v", err)), nil, nil
 		}
 
-		chatReq := &lmstudio.ChatRequest{
-			Model: sess.Model,
-			Input: progress.SaveProgressPrompt,
-		}
-		if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
-			chatReq.Integrations = ints
-		}
-		if sess.LatestResponseID != "" {
-			chatReq.PreviousResponseID = sess.LatestResponseID
+		var summary string
+		if sess.UsesToolProxy {
+			respReq := &lmstudio.ResponsesRequest{
+				Model: sess.Model,
+				Input: progress.SaveProgressPrompt,
+			}
+			if sess.LatestResponseID != "" {
+				respReq.PreviousResponseID = sess.LatestResponseID
+			}
+			respResult, err := lm.Responses(ctx, respReq)
+			if err != nil {
+				return errResult(fmt.Sprintf("Error getting summary: %v", err)), nil, nil
+			}
+			if respResult.Usage != nil {
+				sessions.AddTokens(sess.ID, respResult.Usage.InputTokens, respResult.Usage.OutputTokens, respResult.ID)
+			}
+			for _, out := range respResult.Output {
+				if t := out.MessageText(); t != "" {
+					summary = t
+				}
+			}
+		} else {
+			chatReq := &lmstudio.ChatRequest{
+				Model: sess.Model,
+				Input: progress.SaveProgressPrompt,
+			}
+			if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
+				chatReq.Integrations = ints
+			}
+			if sess.LatestResponseID != "" {
+				chatReq.PreviousResponseID = sess.LatestResponseID
+			}
+
+			chatResp, err := lm.Chat(ctx, chatReq)
+			if err != nil {
+				return errResult(fmt.Sprintf("Error getting summary: %v", err)), nil, nil
+			}
+
+			sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
+			summary = extractMessages(chatResp.Output)
 		}
 
-		chatResp, err := lm.Chat(ctx, chatReq)
-		if err != nil {
-			return errResult(fmt.Sprintf("Error getting summary: %v", err)), nil, nil
-		}
-
-		sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
 		sess, _ = sessions.Get(args.SessionID)
 
-		summary := extractMessages(chatResp.Output)
 		path, err := prog.Save(&progress.Info{
 			SessionID:    sess.ID,
 			Task:         sess.Task,
@@ -910,25 +972,51 @@ func main() {
 
 		var savedPath string
 		if args.Save {
-			chatReq := &lmstudio.ChatRequest{
-				Model: sess.Model,
-				Input: progress.SaveProgressPrompt,
-			}
-			if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
-				chatReq.Integrations = ints
-			}
-			if sess.LatestResponseID != "" {
-				chatReq.PreviousResponseID = sess.LatestResponseID
-			}
-
-			chatResp, err := lm.Chat(ctx, chatReq)
-			if err != nil {
-				logger.Printf("Error getting summary: %v", err)
+			var summary string
+			if sess.UsesToolProxy {
+				respReq := &lmstudio.ResponsesRequest{
+					Model: sess.Model,
+					Input: progress.SaveProgressPrompt,
+				}
+				if sess.LatestResponseID != "" {
+					respReq.PreviousResponseID = sess.LatestResponseID
+				}
+				respResult, err := lm.Responses(ctx, respReq)
+				if err != nil {
+					logger.Printf("Error getting summary: %v", err)
+				} else {
+					if respResult.Usage != nil {
+						sessions.AddTokens(sess.ID, respResult.Usage.InputTokens, respResult.Usage.OutputTokens, respResult.ID)
+					}
+					for _, out := range respResult.Output {
+						if t := out.MessageText(); t != "" {
+							summary = t
+						}
+					}
+				}
 			} else {
-				sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
-				sess, _ = sessions.Get(args.SessionID)
+				chatReq := &lmstudio.ChatRequest{
+					Model: sess.Model,
+					Input: progress.SaveProgressPrompt,
+				}
+				if ints := resolveSessionIntegrations(sess); len(ints) > 0 {
+					chatReq.Integrations = ints
+				}
+				if sess.LatestResponseID != "" {
+					chatReq.PreviousResponseID = sess.LatestResponseID
+				}
 
-				summary := extractMessages(chatResp.Output)
+				chatResp, err := lm.Chat(ctx, chatReq)
+				if err != nil {
+					logger.Printf("Error getting summary: %v", err)
+				} else {
+					sessions.AddTokens(sess.ID, chatResp.Stats.InputTokens, chatResp.Stats.TotalOutputTokens, chatResp.ResponseID)
+					summary = extractMessages(chatResp.Output)
+				}
+			}
+
+			if summary != "" {
+				sess, _ = sessions.Get(args.SessionID)
 				savedPath, err = prog.Save(&progress.Info{
 					SessionID:    sess.ID,
 					Task:         sess.Task,
@@ -1080,6 +1168,40 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+// isFileTruncated detects when LM Studio has truncated a read_file tool
+// result. LM Studio silently truncates tool outputs at ~50K characters and
+// appends '... (truncated)' inside the JSON text value.
+func isFileTruncated(tool, output string) bool {
+	if tool != "read_file" {
+		return false
+	}
+	trimmed := strings.TrimRight(output, " \t\n\r")
+	// The output is JSON like [{"type":"text","text":"...content... (truncated)"}]
+	// Check both raw suffix and JSON-wrapped suffix.
+	return strings.HasSuffix(trimmed, "... (truncated)") ||
+		strings.HasSuffix(trimmed, "... (truncated)\"}]") ||
+		strings.HasSuffix(trimmed, "... (truncated)\"}")
+}
+
+// rereadFile extracts the file path from tool arguments and reads the full
+// file directly from disk, bypassing LM Studio's truncation.
+func rereadFile(args json.RawMessage) (string, error) {
+	var parsed struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &parsed); err != nil {
+		return "", fmt.Errorf("parse args: %w", err)
+	}
+	if parsed.Path == "" {
+		return "", fmt.Errorf("no path in arguments")
+	}
+	data, err := os.ReadFile(parsed.Path)
+	if err != nil {
+		return "", fmt.Errorf("read file %s: %w", parsed.Path, err)
+	}
+	return string(data), nil
+}
+
 func buildStreamCallbacks(cw *chatlog.Writer, as *artifacts.Store, logger *log.Logger, sessionID string) lmstudio.StreamCallbacks {
 	var lastStatusProgress float64
 	return lmstudio.StreamCallbacks{
@@ -1119,7 +1241,16 @@ func buildStreamCallbacks(cw *chatlog.Writer, as *artifacts.Store, logger *log.L
 				cw.WriteToolCallResult(sessionID, tc.Tool, args, output, tc.Reason, tc.Success)
 			}
 			if as != nil && tc.Success && tc.Output != "" {
-				if err := as.Store(sessionID, tc.Tool, tc.Arguments, tc.Output, nil); err != nil {
+				artifactContent := tc.Output
+				if isFileTruncated(tc.Tool, tc.Output) {
+					if full, err := rereadFile(tc.Arguments); err == nil {
+						artifactContent = full
+						logger.Printf("Re-read full file for artifact (%d bytes, was %d truncated)", len(full), len(tc.Output))
+					} else {
+						logger.Printf("Warning: truncation detected but re-read failed: %v", err)
+					}
+				}
+				if err := as.Store(sessionID, tc.Tool, tc.Arguments, artifactContent, nil); err != nil {
 					logger.Printf("Warning: failed to store artifact for %s/%s: %v", sessionID, tc.Tool, err)
 				}
 			}

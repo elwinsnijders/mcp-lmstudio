@@ -150,3 +150,89 @@ type EphemeralMCPIntegration struct {
 	AllowedTools []string          `json:"allowed_tools,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
 }
+
+// /v1/responses API types
+
+type ResponsesRequest struct {
+	Model              string      `json:"model"`
+	Input              interface{} `json:"input"`
+	Instructions       string      `json:"instructions,omitempty"`
+	Tools              interface{} `json:"tools,omitempty"`
+	Temperature        *float64    `json:"temperature,omitempty"`
+	TopP               *float64    `json:"top_p,omitempty"`
+	MaxOutputTokens    *int        `json:"max_output_tokens,omitempty"`
+	PreviousResponseID string      `json:"previous_response_id,omitempty"`
+	Stream             bool        `json:"stream,omitempty"`
+	Store              *bool       `json:"store,omitempty"`
+	TopK               *int        `json:"top_k,omitempty"`
+	MinP               *float64    `json:"min_p,omitempty"`
+	RepeatPenalty      *float64    `json:"repeat_penalty,omitempty"`
+	ContextLength      int         `json:"context_length,omitempty"`
+}
+
+type MessageInput struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type FunctionCallInput struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type FunctionCallOutputInput struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
+}
+
+type ResponsesResponse struct {
+	ID     string            `json:"id"`
+	Status string            `json:"status"`
+	Output []ResponsesOutput `json:"output"`
+	Usage  *ResponsesUsage   `json:"usage,omitempty"`
+}
+
+type ResponsesOutput struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Arguments string          `json:"arguments,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Status    string          `json:"status,omitempty"`
+}
+
+type ResponsesContentItem struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type ResponsesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// MessageText extracts the text from a message-type output item.
+func (o *ResponsesOutput) MessageText() string {
+	if o.Type != "message" || len(o.Content) == 0 {
+		return ""
+	}
+	var items []ResponsesContentItem
+	if err := json.Unmarshal(o.Content, &items); err != nil {
+		return string(o.Content)
+	}
+	var text string
+	for _, item := range items {
+		if item.Type == "output_text" {
+			text += item.Text
+		}
+	}
+	return text
+}

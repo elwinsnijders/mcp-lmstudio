@@ -14,9 +14,20 @@ import (
 )
 
 type App struct {
-	ctx         context.Context
-	chatWatcher *ChatWatcher
-	dataDir     string
+	ctx          context.Context
+	chatWatcher  *ChatWatcher
+	groupWatcher *GroupWatcher
+	dataDir      string
+	debugLog     *os.File
+}
+
+func (a *App) dbg(format string, args ...interface{}) {
+	if a.debugLog == nil {
+		return
+	}
+	ts := time.Now().Format("15:04:05.000")
+	fmt.Fprintf(a.debugLog, "%s [app] %s\n", ts, fmt.Sprintf(format, args...))
+	a.debugLog.Sync()
 }
 
 // SessionDTO is the frontend-facing session representation.
@@ -87,6 +98,8 @@ type IntegrationDTO struct {
 	ServerURL    string            `json:"server_url,omitempty"`
 	AllowedTools []string          `json:"allowed_tools,omitempty"`
 	Headers      map[string]string `json:"headers,omitempty"`
+	Command      []string          `json:"command,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
 }
 
 type SettingsDTO struct {
@@ -107,7 +120,8 @@ type SettingsDTO struct {
 
 func NewApp() *App {
 	return &App{
-		chatWatcher: NewChatWatcher(),
+		chatWatcher:  NewChatWatcher(),
+		groupWatcher: NewGroupWatcher(),
 	}
 }
 
@@ -115,10 +129,20 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.dataDir = findDataDir()
 	a.loadDotEnv()
+	logPath := filepath.Join(a.dataDir, "ui-debug.log")
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		a.debugLog = f
+	}
+	a.dbg("STARTUP dataDir=%s", a.dataDir)
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.dbg("SHUTDOWN")
 	a.chatWatcher.Stop()
+	a.groupWatcher.Stop()
+	if a.debugLog != nil {
+		a.debugLog.Close()
+	}
 }
 
 func findDataDir() string {
@@ -284,20 +308,7 @@ func (a *App) ListGroups() ([]GroupDTO, error) {
 
 	dtos := make([]GroupDTO, 0, len(raw))
 	for _, g := range raw {
-		dtos = append(dtos, GroupDTO{
-			ID:           g.ID,
-			Type:         g.Type,
-			Status:       g.Status,
-			TotalSteps:   g.TotalSteps,
-			CurrentStep:  g.CurrentStep,
-			Succeeded:    g.Succeeded,
-			Failed:       g.Failed,
-			SessionIDs:   g.SessionIDs,
-			ChainMode:    g.ChainMode,
-			StoppedEarly: g.StoppedEarly,
-			CreatedAt:    g.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:    g.UpdatedAt.Format(time.RFC3339),
-		})
+		dtos = append(dtos, rawGroupToDTO(&g))
 	}
 
 	sort.Slice(dtos, func(i, j int) bool {
@@ -329,13 +340,26 @@ func (a *App) LoadChatLog(sessionID string) ([]chatlog.ChatEvent, error) {
 }
 
 func (a *App) StartChatWatch(sessionID string) {
+	a.dbg("StartChatWatch session=%s", sessionID)
 	chatlogDir := filepath.Join(a.dataDir, "chatlogs")
 	path := filepath.Join(chatlogDir, sessionID+".jsonl")
 	a.chatWatcher.Start(a.ctx, path, sessionID)
 }
 
 func (a *App) StopChatWatch() {
+	a.dbg("StopChatWatch")
 	a.chatWatcher.Stop()
+}
+
+func (a *App) StartGroupWatch(groupID string, initialLen int) {
+	a.dbg("StartGroupWatch group=%s initialLen=%d", groupID, initialLen)
+	a.chatWatcher.Stop()
+	a.groupWatcher.Start(a.ctx, a.dataDir, groupID, initialLen)
+}
+
+func (a *App) StopGroupWatch() {
+	a.dbg("StopGroupWatch")
+	a.groupWatcher.Stop()
 }
 
 // ── Config (profiles & integrations) ────────────────────────────────────
