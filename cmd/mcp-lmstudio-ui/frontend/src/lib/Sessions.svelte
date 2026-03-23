@@ -196,6 +196,28 @@
     return task.length > max ? task.slice(0, max) + '...' : task
   }
 
+  function timeAgo(ts) {
+    if (!ts) return ''
+    try {
+      const d = new Date(ts)
+      const now = Date.now()
+      const diff = now - d.getTime()
+      if (diff < 0) return 'just now'
+      const secs = Math.floor(diff / 1000)
+      if (secs < 60) return 'just now'
+      const mins = Math.floor(secs / 60)
+      if (mins < 60) return `${mins}m ago`
+      const hrs = Math.floor(mins / 60)
+      if (hrs < 24) return `${hrs}h ago`
+      const days = Math.floor(hrs / 24)
+      if (days === 1) return 'yesterday'
+      if (days < 7) return `${days}d ago`
+      return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' })
+    } catch (_) {
+      return ''
+    }
+  }
+
   $: totalCount = sessions.length
 </script>
 
@@ -250,7 +272,11 @@
       {:else}
         {#each projectSections as section}
           {#if section.type === 'project'}
-            {@const isProjectExpanded = expandedProjects[section.name] !== false}
+            {@const isProjectExpanded = expandedProjects[section.name] === true}
+            {@const projectLatest = section.items.reduce((best, it) => {
+              const ts = it.type === 'group' ? it.group.updatedAt : it.session?.lastActiveAt
+              return ts > best ? ts : best
+            }, '')}
             <button
               class="w-full px-4 py-2.5 flex items-center gap-3 bg-violet-50/60 border-b border-violet-200 hover:bg-violet-100/60 transition-colors text-left cursor-pointer"
               on:click={() => toggleProject(section.name)}
@@ -268,13 +294,14 @@
                 </span>
               {/if}
               <span class="ml-auto text-[10px] text-violet-400">{section.sessionCount} sessions</span>
+              <span class="text-xs text-violet-400 whitespace-nowrap">{timeAgo(projectLatest)}</span>
             </button>
 
             {#if isProjectExpanded}
               {#each section.items as item}
                 {#if item.type === 'group'}
                   {@const g = item.group}
-                  {@const isExpanded = expandedGroups[g.id] !== false}
+                  {@const isExpanded = expandedGroups[g.id] === true}
                   {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
                   <button
                     class="w-full px-4 py-2.5 flex items-center gap-3 bg-gray-50/80 border-b border-gray-200 hover:bg-gray-100/80 transition-colors text-left cursor-pointer pl-10"
@@ -302,7 +329,7 @@
                       <span class="text-[10px] text-orange-500 font-medium">stopped early</span>
                     {/if}
                     <span class="ml-auto text-[10px] text-gray-400">{item.sessions.length} sessions</span>
-                    <span class="text-xs text-gray-400">{formatTime(g.updatedAt)}</span>
+                    <span class="text-xs text-gray-400 whitespace-nowrap">{timeAgo(g.updatedAt)}</span>
                   </button>
 
                   {#if isExpanded}
@@ -404,7 +431,7 @@
             {#each section.items as item}
               {#if item.type === 'group'}
                 {@const g = item.group}
-                {@const isExpanded = expandedGroups[g.id] !== false}
+                {@const isExpanded = expandedGroups[g.id] === true}
                 {@const pct = g.totalSteps > 0 ? (g.currentStep / g.totalSteps) * 100 : 0}
                 <button
                   class="w-full px-4 py-2.5 flex items-center gap-3 bg-gray-50/80 border-b border-gray-200 hover:bg-gray-100/80 transition-colors text-left cursor-pointer"
@@ -432,7 +459,7 @@
                     <span class="text-[10px] text-orange-500 font-medium">stopped early</span>
                   {/if}
                   <span class="ml-auto text-[10px] text-gray-400">{item.sessions.length} sessions</span>
-                  <span class="text-xs text-gray-400">{formatTime(g.updatedAt)}</span>
+                  <span class="text-xs text-gray-400 whitespace-nowrap">{timeAgo(g.updatedAt)}</span>
                 </button>
 
                 {#if isExpanded}
